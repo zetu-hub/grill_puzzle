@@ -1,0 +1,470 @@
+import { FOOD_MAP } from '../config/foods.js';
+import { findMatchingFoods, removeThree } from '../logic/MatchLogic.js';
+
+// ─── レイアウト定数 ────────────────────────────────────────
+const COLS        = 3;
+const ROWS        = 4;   // 4行 × 3列 = 12グリル
+const CELL_W      = 125; // 375 / 3
+const CELL_H      = 128;
+
+const GRID_X      = 0;
+const GRID_Y      = 95;
+
+const GRILL_PAD_X = 6;
+const GRILL_PAD_Y = 6;
+const GRILL_W     = 113; // CELL_W - GRILL_PAD_X*2 + 1
+const GRILL_H     = 50;  // 1行分の高さ
+
+// 食材スロット：横1列×3マス（グリル左上基点）
+const ICON_SIZE  = 32;
+const FOOD_SLOTS = [
+  { x: 4,  y: 9 },   // 左
+  { x: 41, y: 9 },   // 中
+  { x: 78, y: 9 },   // 右
+];
+const CAPACITY   = 3;
+
+// 皿（グリルの真下）
+const PLATE_GAP       = 5;
+const PLATE_H         = 36;
+const PLATE_ICON_SIZE = 22;
+// grillY からの距離
+const PLATE_OFFSET    = GRILL_H + PLATE_GAP;
+
+// ─── ゲーム定数 ────────────────────────────────────────────
+const GOAL         = 30;
+const GAME_SECS    = 300; // 5分
+const ACTIVE_FOODS = [1, 2, 3, 4, 5];
+
+// ──────────────────────────────────────────────────────────
+export default class GameScene extends Phaser.Scene {
+  constructor() { super({ key: 'GameScene' }); }
+
+  // ─── 初期化 ──────────────────────────────────────────────
+  create() {
+    this.grills = Array.from({ length: COLS * ROWS }, (_, i) => ({
+      id: i,
+      foods:      this._randFoods(Phaser.Math.Between(1, CAPACITY)),
+      plateFoods: this._randFoods(Phaser.Math.Between(1, 3)),
+    }));
+
+    this.selected    = null;  // { grillIdx, foodIdx } | null
+    this.score       = 0;
+    this.cleared     = 0;
+    this.timeLeft    = GAME_SECS;
+    this.isAnimating = false;
+
+    const W = this.scale.width;
+
+    // 背景
+    this.add.rectangle(W / 2, 406, W, 812, 0xc8974a);
+    const bgGfx = this.add.graphics().setDepth(0).setAlpha(0.10);
+    for (let r = 0; r < 22; r++)
+      for (let c = 0; c < 10; c++) {
+        bgGfx.fillStyle(0x7b4f10);
+        bgGfx.fillRect(c * 40 + (r % 2) * 20, r * 40, 20, 20);
+      }
+
+    this._buildHUD();
+    this._buildGrills();
+    this._buildItemBar();
+
+    this.input.on('pointerdown', this._onPointerDown, this);
+
+    this.gameTimer = this.time.addEvent({
+      delay: 1000, loop: true,
+      callback: this._onSecondTick, callbackScope: this,
+    });
+  }
+
+  // ─── ランダム生成 ─────────────────────────────────────────
+  _randFood() {
+    return ACTIVE_FOODS[Phaser.Math.Between(0, ACTIVE_FOODS.length - 1)];
+  }
+  _randFoods(n) {
+    return Array.from({ length: n }, () => this._randFood());
+  }
+
+  // ─── 座標ヘルパー ─────────────────────────────────────────
+  _grillPos(idx) {
+    const col = idx % COLS;
+    const row = Math.floor(idx / COLS);
+    return {
+      gx: GRID_X + col * CELL_W + GRILL_PAD_X,
+      gy: GRID_Y + row * CELL_H + GRILL_PAD_Y,
+    };
+  }
+
+  // ─── HUD ─────────────────────────────────────────────────
+  _buildHUD() {
+    const W = this.scale.width;
+    this.add.rectangle(W / 2, 47, W, 94, 0xb07830).setDepth(9);
+    this.add.rectangle(W / 2, 94, W, 2, 0x7a4e10).setDepth(9);
+
+    this.add.text(18, 28, 'Lv.1', {
+      fontSize: '18px', fill: '#fff', fontFamily: 'sans-serif',
+      backgroundColor: '#7a4e10', padding: { x: 10, y: 6 },
+    }).setDepth(10);
+
+    this.timerText = this.add.text(W / 2, 20, '05:00', {
+      fontSize: '36px', fill: '#44ee44', fontFamily: 'monospace',
+      stroke: '#003300', strokeThickness: 3,
+    }).setOrigin(0.5, 0).setDepth(10);
+
+    this.counterText = this.add.text(W - 18, 28, `0/${GOAL}`, {
+      fontSize: '18px', fill: '#fff', fontFamily: 'sans-serif',
+      backgroundColor: '#7a4e10', padding: { x: 10, y: 6 },
+    }).setOrigin(1, 0).setDepth(10);
+
+    this.add.circle(W - 22, 74, 17, 0xd4a860)
+      .setDepth(10).setInteractive();
+    this.add.text(W - 22, 74, '⏸', { fontSize: '18px' })
+      .setOrigin(0.5).setDepth(11);
+  }
+
+  // ─── グリル全体描画 ───────────────────────────────────────
+  _buildGrills() {
+    this.grillGfx = this.add.graphics().setDepth(2);
+    this.foodObjs = [];
+    this._redrawAll();
+  }
+
+  _redrawAll() {
+    this.grillGfx.clear();
+    this.foodObjs.forEach(o => o.destroy());
+    this.foodObjs = [];
+    for (let i = 0; i < COLS * ROWS; i++) this._drawGrill(i);
+  }
+
+  _drawGrill(idx) {
+    const grill    = this.grills[idx];
+    const { gx, gy } = this._grillPos(idx);
+    const isSel    = this.selected?.grillIdx === idx;
+
+    // ── グリル本体 ──────────────────────────────────────────
+    // 影
+    this.grillGfx.fillStyle(0x111111, 0.7);
+    this.grillGfx.fillRoundedRect(gx - 2, gy - 2, GRILL_W + 4, GRILL_H + 4, 7);
+    // 表面
+    this.grillGfx.fillStyle(0x2a2a2a, 1);
+    this.grillGfx.fillRoundedRect(gx, gy, GRILL_W, GRILL_H, 6);
+    // 横ライン（網目）
+    this.grillGfx.lineStyle(1.5, 0x505050, 0.9);
+    for (let r = 1; r <= 2; r++)
+      this.grillGfx.lineBetween(gx + 4, gy + (GRILL_H / 3) * r, gx + GRILL_W - 4, gy + (GRILL_H / 3) * r);
+    // 縦ライン（網目）
+    for (let c = 1; c <= 5; c++)
+      this.grillGfx.lineBetween(gx + (GRILL_W / 6) * c, gy + 3, gx + (GRILL_W / 6) * c, gy + GRILL_H - 3);
+
+    // 選択中ハイライト
+    if (isSel) {
+      this.grillGfx.lineStyle(3, 0xffee00, 1);
+      this.grillGfx.strokeRoundedRect(gx - 3, gy - 3, GRILL_W + 6, GRILL_H + 6, 9);
+    }
+
+    // ── 食材アイコン ────────────────────────────────────────
+    for (let fi = 0; fi < grill.foods.length; fi++) {
+      const food = FOOD_MAP[grill.foods[fi]];
+      const { x: sx, y: sy } = FOOD_SLOTS[fi];
+      const ax = gx + sx;
+      const ay = gy + sy;
+      const isSelFood = isSel && this.selected?.foodIdx === fi;
+
+      // 選択グロー
+      if (isSelFood) {
+        this.grillGfx.fillStyle(0xffffff, 0.45);
+        this.grillGfx.fillRoundedRect(ax - 4, ay - 4, ICON_SIZE + 8, ICON_SIZE + 8, 9);
+      }
+      // 食材本体
+      this.grillGfx.fillStyle(food.color, 1);
+      this.grillGfx.fillRoundedRect(ax, ay, ICON_SIZE, ICON_SIZE, 7);
+      // 光沢
+      this.grillGfx.fillStyle(0xffffff, 0.20);
+      this.grillGfx.fillRoundedRect(ax + 3, ay + 2, ICON_SIZE - 6, 9, 3);
+
+      const lbl = this.add.text(ax + ICON_SIZE / 2, ay + ICON_SIZE / 2, food.label, {
+        fontSize: '12px', fill: '#fff', fontFamily: 'sans-serif',
+        stroke: '#000', strokeThickness: 2,
+      }).setOrigin(0.5).setDepth(4);
+      this.foodObjs.push(lbl);
+    }
+
+    // ── 皿 ─────────────────────────────────────────────────
+    const plateX = gx;
+    const plateY = gy + PLATE_OFFSET;
+
+    // 皿ベース
+    this.grillGfx.fillStyle(0xf2ead8, 1);
+    this.grillGfx.fillRoundedRect(plateX, plateY, GRILL_W, PLATE_H, 8);
+    this.grillGfx.lineStyle(1.5, 0xc8a870, 1);
+    this.grillGfx.strokeRoundedRect(plateX, plateY, GRILL_W, PLATE_H, 8);
+    // 内側の輪（皿らしさ）
+    this.grillGfx.lineStyle(1, 0xddd0b0, 0.5);
+    this.grillGfx.strokeRoundedRect(plateX + 4, plateY + 3, GRILL_W - 8, PLATE_H - 6, 5);
+
+    // 皿の食材（中央揃え、1〜3個）
+    const pf = grill.plateFoods;
+    if (pf.length > 0) {
+      const GAP    = 5;
+      const totalW = pf.length * PLATE_ICON_SIZE + (pf.length - 1) * GAP;
+      let px       = plateX + Math.floor((GRILL_W - totalW) / 2);
+      const py     = plateY + Math.floor((PLATE_H - PLATE_ICON_SIZE) / 2);
+
+      for (const foodId of pf) {
+        const food = FOOD_MAP[foodId];
+        this.grillGfx.fillStyle(food.color, 0.9);
+        this.grillGfx.fillRoundedRect(px, py, PLATE_ICON_SIZE, PLATE_ICON_SIZE, 5);
+        // 光沢
+        this.grillGfx.fillStyle(0xffffff, 0.18);
+        this.grillGfx.fillRoundedRect(px + 2, py + 2, PLATE_ICON_SIZE - 4, 6, 2);
+
+        const plateLbl = this.add.text(px + PLATE_ICON_SIZE / 2, py + PLATE_ICON_SIZE / 2, food.label, {
+          fontSize: '9px', fill: '#fff', fontFamily: 'sans-serif',
+          stroke: '#000', strokeThickness: 1,
+        }).setOrigin(0.5).setDepth(4);
+        this.foodObjs.push(plateLbl);
+
+        px += PLATE_ICON_SIZE + GAP;
+      }
+    }
+  }
+
+  // ─── アイテムバー ─────────────────────────────────────────
+  _buildItemBar() {
+    const W    = this.scale.width;
+    const barY = GRID_Y + ROWS * CELL_H + 14;
+    this.add.rectangle(W / 2, barY + 32, W, 68, 0xb07830).setDepth(5);
+    this.add.rectangle(W / 2, barY,      W, 2,  0x7a4e10).setDepth(5);
+
+    const ICONS   = ['🍚', '🔄', '🧊', '🍖'];
+    const LABELS  = ['', '', 'Lv.8', 'Lv.20'];
+    const locked  = [false, false, true, true];
+    for (let i = 0; i < 4; i++) {
+      const bx = 44 + i * 74;
+      this.add.circle(bx, barY + 30, 26, locked[i] ? 0x9a7450 : 0xd4b07a)
+        .setDepth(6).setStrokeStyle(2, 0x7a5030);
+      this.add.text(bx, barY + 30, ICONS[i], { fontSize: '20px' })
+        .setOrigin(0.5).setDepth(7);
+      if (LABELS[i]) {
+        this.add.text(bx, barY + 56, LABELS[i], {
+          fontSize: '10px', fill: '#5a3010', fontFamily: 'sans-serif',
+        }).setOrigin(0.5).setDepth(7);
+      }
+      if (!locked[i]) {
+        this.add.circle(bx + 18, barY + 10, 9, 0x228822).setDepth(8);
+        this.add.text(bx + 18, barY + 10, '1', {
+          fontSize: '10px', fill: '#fff', fontFamily: 'sans-serif',
+        }).setOrigin(0.5).setDepth(9);
+      }
+    }
+  }
+
+  // ─── 入力処理 ─────────────────────────────────────────────
+  _onPointerDown(pointer) {
+    if (this.isAnimating) return;
+    const { x: px, y: py } = pointer;
+
+    for (let gi = 0; gi < COLS * ROWS; gi++) {
+      const grill      = this.grills[gi];
+      const { gx, gy } = this._grillPos(gi);
+
+      // 食材スロット判定（食材がある分だけ）
+      for (let fi = 0; fi < grill.foods.length; fi++) {
+        const ax = gx + FOOD_SLOTS[fi].x;
+        const ay = gy + FOOD_SLOTS[fi].y;
+        if (px >= ax && px < ax + ICON_SIZE && py >= ay && py < ay + ICON_SIZE) {
+          this._onFoodTap(gi, fi);
+          return;
+        }
+      }
+
+      // グリル本体（ドロップ先として）
+      if (px >= gx && px < gx + GRILL_W && py >= gy && py < gy + GRILL_H) {
+        this._onGrillBodyTap(gi);
+        return;
+      }
+    }
+
+    // 範囲外 → 選択解除
+    if (this.selected) {
+      this.selected = null;
+      this._redrawAll();
+    }
+  }
+
+  _onFoodTap(grillIdx, foodIdx) {
+    if (!this.selected) {
+      this.selected = { grillIdx, foodIdx };
+      this._redrawAll();
+    } else if (this.selected.grillIdx === grillIdx) {
+      // 同じグリル → 解除
+      this.selected = null;
+      this._redrawAll();
+    } else {
+      this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx);
+    }
+  }
+
+  _onGrillBodyTap(grillIdx) {
+    if (!this.selected) return;
+    if (this.selected.grillIdx === grillIdx) {
+      this.selected = null;
+      this._redrawAll();
+      return;
+    }
+    this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx);
+  }
+
+  // ─── 移動 ─────────────────────────────────────────────────
+  _moveFood(fromIdx, fromFoodIdx, toIdx) {
+    const src = this.grills[fromIdx];
+    const dst = this.grills[toIdx];
+
+    if (dst.foods.length >= CAPACITY) {
+      this._shakeFeedback(toIdx);
+      this.selected = null;
+      this._redrawAll();
+      return;
+    }
+
+    const [foodId] = src.foods.splice(fromFoodIdx, 1);
+    dst.foods.push(foodId);
+    this.selected = null;
+
+    this._redrawAll();
+    this._checkMatch(toIdx);
+  }
+
+  // ─── マッチ判定・消去・皿補充 ─────────────────────────────
+  _checkMatch(grillIdx) {
+    const grill   = this.grills[grillIdx];
+    const matches = findMatchingFoods(grill.foods);
+    if (matches.length === 0) return;
+
+    this.isAnimating = true;
+    let gained = 0;
+
+    this._flashGrill(grillIdx, () => {
+      // 消去
+      for (const foodId of matches) {
+        grill.foods  = removeThree(grill.foods, foodId);
+        this.cleared += 3;
+        this.score   += 150;
+        gained       += 150;
+      }
+      this._showScorePopup(`+${gained}`, grillIdx);
+      this._updateHUD();
+
+      const afterClear = () => {
+        this._redrawAll();
+
+        // クリア達成チェック
+        if (this.cleared >= GOAL) {
+          this.isAnimating = false;
+          this.time.delayedCall(500, () => this._onVictory());
+          return;
+        }
+
+        // 補充後に連鎖チェック（少し間を置く）
+        this.time.delayedCall(180, () => {
+          this.isAnimating = false;
+          this._checkMatch(grillIdx);
+        });
+      };
+
+      // グリルが空になったら皿から自動補充
+      if (grill.foods.length === 0 && grill.plateFoods.length > 0) {
+        this.time.delayedCall(250, () => {
+          grill.foods      = [...grill.plateFoods];
+          grill.plateFoods = this._randFoods(Phaser.Math.Between(1, 3));
+          afterClear();
+        });
+      } else {
+        afterClear();
+      }
+    });
+  }
+
+  // ─── タイマー ─────────────────────────────────────────────
+  _onSecondTick() {
+    this.timeLeft--;
+    this._updateHUD();
+    if (this.timeLeft <= 0) {
+      this.gameTimer.remove();
+      this._onTimeUp();
+    }
+  }
+
+  _updateHUD() {
+    const m = String(Math.floor(this.timeLeft / 60)).padStart(2, '0');
+    const s = String(this.timeLeft % 60).padStart(2, '0');
+    this.timerText.setText(`${m}:${s}`);
+    this.counterText.setText(`${this.cleared}/${GOAL}`);
+    if (this.timeLeft <= 30) this.timerText.setStyle({ fill: '#ff4444' });
+  }
+
+  // ─── 演出 ─────────────────────────────────────────────────
+  _flashGrill(grillIdx, onComplete) {
+    const { gx, gy } = this._grillPos(grillIdx);
+    const gfx = this.add.graphics().setDepth(8);
+    let n = 0;
+    const tick = () => {
+      gfx.clear();
+      if (n % 2 === 0) {
+        gfx.fillStyle(0xffff88, 0.7);
+        gfx.fillRoundedRect(gx, gy, GRILL_W, GRILL_H, 6);
+      }
+      if (++n < 6) this.time.delayedCall(80, tick);
+      else { gfx.destroy(); onComplete(); }
+    };
+    tick();
+  }
+
+  _showScorePopup(text, grillIdx) {
+    const { gx, gy } = this._grillPos(grillIdx);
+    const t = this.add.text(gx + GRILL_W / 2, gy + GRILL_H / 2, text, {
+      fontSize: '26px', fill: '#ffff00',
+      fontFamily: 'sans-serif', stroke: '#000', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(20);
+    this.tweens.add({
+      targets: t, y: gy - 18, alpha: 0, duration: 700,
+      onComplete: () => t.destroy(),
+    });
+  }
+
+  _shakeFeedback(grillIdx) {
+    const { gx, gy } = this._grillPos(grillIdx);
+    const gfx = this.add.graphics().setDepth(8);
+    gfx.lineStyle(3, 0xff3333, 1);
+    gfx.strokeRoundedRect(gx - 1, gy - 1, GRILL_W + 2, GRILL_H + 2, 7);
+    this.time.delayedCall(350, () => gfx.destroy());
+  }
+
+  // ─── ゲーム終了 ───────────────────────────────────────────
+  _onVictory() {
+    this.gameTimer?.remove();
+    this._overlay('CLEAR!', '#ffee00', `SCORE: ${this.score}`);
+  }
+
+  _onTimeUp() {
+    this._overlay('TIME UP!', '#ff4444', `${this.cleared} / ${GOAL} 消せた`);
+  }
+
+  _overlay(title, titleColor, sub) {
+    const W = this.scale.width;
+    this.add.rectangle(W / 2, 406, W, 812, 0x000000, 0.6).setDepth(30);
+    this.add.text(W / 2, 290, title, {
+      fontSize: '52px', fill: titleColor,
+      fontFamily: 'sans-serif', stroke: '#000', strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(31);
+    this.add.text(W / 2, 372, sub, {
+      fontSize: '26px', fill: '#fff', fontFamily: 'sans-serif',
+    }).setOrigin(0.5).setDepth(31);
+    this.add.text(W / 2, 452, '[ もう一度 ]', {
+      fontSize: '22px', fill: '#ffdd00', fontFamily: 'sans-serif',
+      stroke: '#000', strokeThickness: 2,
+      backgroundColor: '#7a3300', padding: { x: 20, y: 12 },
+    }).setOrigin(0.5).setDepth(31).setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => this.scene.restart());
+  }
+}
