@@ -50,10 +50,14 @@ export default class GameScene extends Phaser.Scene {
     }));
 
     this.selected = null;
+    this.dragState = null;
+    this.dropTarget = null;
     this.score = 0;
     this.cleared = 0;
     this.timeLeft = GAME_SECS;
     this.isAnimating = false;
+
+    this.game.canvas.style.touchAction = 'none';
 
     const W = this.scale.width;
 
@@ -71,6 +75,9 @@ export default class GameScene extends Phaser.Scene {
     this._buildItemBar();
 
     this.input.on('pointerdown', this._onPointerDown, this);
+    this.input.on('pointermove', this._onPointerMove, this);
+    this.input.on('pointerup', this._onPointerUp, this);
+    this.input.on('pointerupoutside', this._onPointerUp, this);
 
     this.gameTimer = this.time.addEvent({
       delay: 1000,
@@ -154,6 +161,7 @@ export default class GameScene extends Phaser.Scene {
     const grill = this.grills[idx];
     const { gx, gy } = this._grillPos(idx);
     const isSel = this.selected?.grillIdx === idx;
+    const isDropTarget = this.dropTarget === idx;
 
     this.grillGfx.fillStyle(0x111111, 0.7);
     this.grillGfx.fillRoundedRect(gx - 2, gy - 2, GRILL_W + 4, GRILL_H + 4, 7);
@@ -171,6 +179,11 @@ export default class GameScene extends Phaser.Scene {
     if (isSel) {
       this.grillGfx.lineStyle(3, 0xffee00, 1);
       this.grillGfx.strokeRoundedRect(gx - 3, gy - 3, GRILL_W + 6, GRILL_H + 6, 9);
+    }
+    if (isDropTarget) {
+      const canDrop = grill.foods.length < CAPACITY && this.dragState?.fromIdx !== idx;
+      this.grillGfx.lineStyle(3, canDrop ? 0x66ff66 : 0xff3333, 1);
+      this.grillGfx.strokeRoundedRect(gx - 4, gy - 4, GRILL_W + 8, GRILL_H + 8, 10);
     }
 
     for (let fi = 0; fi < grill.foods.length; fi++) {
@@ -276,29 +289,117 @@ export default class GameScene extends Phaser.Scene {
     if (this.isAnimating) return;
     const { x: px, y: py } = pointer;
 
-    for (let gi = 0; gi < COLS * ROWS; gi++) {
-      const grill = this.grills[gi];
-      const { gx, gy } = this._grillPos(gi);
+    const foodHit = this._findFoodAt(px, py);
+    if (foodHit) {
+      this._beginFoodDrag(pointer, foodHit.grillIdx, foodHit.foodIdx);
+      return;
+    }
 
-      for (let fi = 0; fi < grill.foods.length; fi++) {
-        const ax = gx + FOOD_SLOTS[fi].x;
-        const ay = gy + FOOD_SLOTS[fi].y;
-        if (px >= ax && px < ax + ICON_SIZE && py >= ay && py < ay + ICON_SIZE) {
-          this._onFoodTap(gi, fi);
-          return;
-        }
-      }
-
-      if (px >= gx && px < gx + GRILL_W && py >= gy && py < gy + GRILL_H) {
-        this._onGrillBodyTap(gi);
-        return;
-      }
+    const grillIdx = this._findGrillBodyAt(px, py);
+    if (grillIdx !== null) {
+      this._onGrillBodyTap(grillIdx);
+      return;
     }
 
     if (this.selected) {
       this.selected = null;
       this._redrawAll();
     }
+  }
+
+  _onPointerMove(pointer) {
+    if (!this.dragState) return;
+
+    const dx = pointer.x - this.dragState.startX;
+    const dy = pointer.y - this.dragState.startY;
+    if (!this.dragState.hasMoved && Math.hypot(dx, dy) < 6) return;
+
+    if (!this.dragState.hasMoved) {
+      this.dragState.hasMoved = true;
+      this._createDragGhost(pointer);
+    }
+
+    this.dragState.ghost?.setPosition(pointer.x, pointer.y);
+    const nextDropTarget = this._findGrillBodyAt(pointer.x, pointer.y);
+    if (nextDropTarget !== this.dropTarget) {
+      this.dropTarget = nextDropTarget;
+      this._redrawAll();
+      this.dragState.ghost?.setPosition(pointer.x, pointer.y);
+    }
+  }
+
+  _onPointerUp(pointer) {
+    if (!this.dragState) return;
+
+    const drag = this.dragState;
+    const dropIdx = this._findGrillBodyAt(pointer.x, pointer.y);
+    this._clearDragVisuals();
+
+    if (!drag.hasMoved) {
+      this._onFoodTap(drag.fromIdx, drag.foodIdx);
+      return;
+    }
+
+    if (dropIdx !== null && dropIdx !== drag.fromIdx) {
+      this._moveFood(drag.fromIdx, drag.foodIdx, dropIdx);
+      return;
+    }
+
+    this.selected = null;
+    this._redrawAll();
+  }
+
+  _findFoodAt(px, py) {
+    for (let gi = 0; gi < COLS * ROWS; gi++) {
+      const grill = this.grills[gi];
+      const { gx, gy } = this._grillPos(gi);
+      for (let fi = 0; fi < grill.foods.length; fi++) {
+        const ax = gx + FOOD_SLOTS[fi].x;
+        const ay = gy + FOOD_SLOTS[fi].y;
+        if (px >= ax && px < ax + ICON_SIZE && py >= ay && py < ay + ICON_SIZE) {
+          return { grillIdx: gi, foodIdx: fi };
+        }
+      }
+    }
+    return null;
+  }
+
+  _findGrillBodyAt(px, py) {
+    for (let gi = 0; gi < COLS * ROWS; gi++) {
+      const { gx, gy } = this._grillPos(gi);
+      if (px >= gx && px < gx + GRILL_W && py >= gy && py < gy + GRILL_H) return gi;
+    }
+    return null;
+  }
+
+  _beginFoodDrag(pointer, grillIdx, foodIdx) {
+    this._clearDragVisuals();
+    this.dragState = {
+      fromIdx: grillIdx,
+      foodIdx,
+      foodId: this.grills[grillIdx].foods[foodIdx],
+      startX: pointer.x,
+      startY: pointer.y,
+      hasMoved: false,
+      ghost: null,
+    };
+  }
+
+  _createDragGhost(pointer) {
+    if (!this.dragState) return;
+    const food = FOOD_MAP[this.dragState.foodId];
+    this.selected = { grillIdx: this.dragState.fromIdx, foodIdx: this.dragState.foodIdx };
+    this._redrawAll();
+    this.dragState.ghost = this.add.image(pointer.x, pointer.y, food.texture)
+      .setDisplaySize(48, 48)
+      .setAlpha(0.86)
+      .setDepth(25);
+  }
+
+  _clearDragVisuals() {
+    this.dragState?.ghost?.destroy();
+    this.dragState = null;
+    this.dropTarget = null;
   }
 
   _onFoodTap(grillIdx, foodIdx) {
