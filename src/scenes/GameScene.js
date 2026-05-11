@@ -15,6 +15,11 @@ const GRILL_W = 113;
 const GRILL_H = 50;
 
 const ICON_SIZE = 32;
+const FOOD_HIT_PAD = 12;
+const DRAG_START_DISTANCE = 3;
+const DRAG_GHOST_SIZE = 50;
+const DRAG_GHOST_OFFSET_Y = -34;
+const DROP_HIT_PAD = 10;
 const FOOD_SLOTS = [
   { x: 4, y: 9 },
   { x: 41, y: 9 },
@@ -312,19 +317,19 @@ export default class GameScene extends Phaser.Scene {
 
     const dx = pointer.x - this.dragState.startX;
     const dy = pointer.y - this.dragState.startY;
-    if (!this.dragState.hasMoved && Math.hypot(dx, dy) < 6) return;
+    if (!this.dragState.hasMoved && Math.hypot(dx, dy) < DRAG_START_DISTANCE) return;
 
     if (!this.dragState.hasMoved) {
       this.dragState.hasMoved = true;
-      this._createDragGhost(pointer);
+      this.selected = { grillIdx: this.dragState.fromIdx, foodIdx: this.dragState.foodIdx };
     }
 
-    this.dragState.ghost?.setPosition(pointer.x, pointer.y);
-    const nextDropTarget = this._findGrillBodyAt(pointer.x, pointer.y);
+    this._positionDragGhost(pointer);
+    const nextDropTarget = this._findDropTargetAt(pointer.x, pointer.y);
     if (nextDropTarget !== this.dropTarget) {
       this.dropTarget = nextDropTarget;
       this._redrawAll();
-      this.dragState.ghost?.setPosition(pointer.x, pointer.y);
+      this._positionDragGhost(pointer);
     }
   }
 
@@ -332,7 +337,7 @@ export default class GameScene extends Phaser.Scene {
     if (!this.dragState) return;
 
     const drag = this.dragState;
-    const dropIdx = this._findGrillBodyAt(pointer.x, pointer.y);
+    const dropIdx = this._findDropTargetAt(pointer.x, pointer.y);
     this._clearDragVisuals();
 
     if (!drag.hasMoved) {
@@ -356,7 +361,12 @@ export default class GameScene extends Phaser.Scene {
       for (let fi = 0; fi < grill.foods.length; fi++) {
         const ax = gx + FOOD_SLOTS[fi].x;
         const ay = gy + FOOD_SLOTS[fi].y;
-        if (px >= ax && px < ax + ICON_SIZE && py >= ay && py < ay + ICON_SIZE) {
+        if (
+          px >= ax - FOOD_HIT_PAD &&
+          px < ax + ICON_SIZE + FOOD_HIT_PAD &&
+          py >= ay - FOOD_HIT_PAD &&
+          py < ay + ICON_SIZE + FOOD_HIT_PAD
+        ) {
           return { grillIdx: gi, foodIdx: fi };
         }
       }
@@ -372,6 +382,18 @@ export default class GameScene extends Phaser.Scene {
     return null;
   }
 
+  _findDropTargetAt(px, py) {
+    for (let gi = 0; gi < COLS * ROWS; gi++) {
+      const { gx, gy } = this._grillPos(gi);
+      const left = gx - DROP_HIT_PAD;
+      const top = gy - DROP_HIT_PAD;
+      const right = gx + GRILL_W + DROP_HIT_PAD;
+      const bottom = gy + GRILL_H + PLATE_GAP + PLATE_H + DROP_HIT_PAD;
+      if (px >= left && px < right && py >= top && py < bottom) return gi;
+    }
+    return null;
+  }
+
   _beginFoodDrag(pointer, grillIdx, foodIdx) {
     this._clearDragVisuals();
     this.dragState = {
@@ -383,17 +405,22 @@ export default class GameScene extends Phaser.Scene {
       hasMoved: false,
       ghost: null,
     };
+    this._createDragGhost(pointer);
   }
 
   _createDragGhost(pointer) {
     if (!this.dragState) return;
     const food = FOOD_MAP[this.dragState.foodId];
-    this.selected = { grillIdx: this.dragState.fromIdx, foodIdx: this.dragState.foodIdx };
-    this._redrawAll();
     this.dragState.ghost = this.add.image(pointer.x, pointer.y, food.texture)
-      .setDisplaySize(48, 48)
-      .setAlpha(0.86)
+      .setDisplaySize(DRAG_GHOST_SIZE, DRAG_GHOST_SIZE)
+      .setAlpha(0.9)
       .setDepth(25);
+    this._positionDragGhost(pointer);
+  }
+
+  _positionDragGhost(pointer) {
+    if (!this.dragState?.ghost) return;
+    this.dragState.ghost.setPosition(pointer.x, pointer.y + DRAG_GHOST_OFFSET_Y);
   }
 
   _clearDragVisuals() {
