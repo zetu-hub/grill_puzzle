@@ -21,6 +21,13 @@ const DRAG_GHOST_SIZE = 50;
 const DRAG_GHOST_OFFSET_Y = -42;
 const DROP_HIT_PAD = 10;
 const RECORDS_KEY = 'grillPuzzleRecordsV1';
+const UI_ASSETS = [
+  ['ui-item-shuffle', 'src/assets/ui/item-shuffle.png'],
+  ['ui-item-undo', 'src/assets/ui/item-undo.png'],
+  ['ui-item-open', 'src/assets/ui/item-open.png'],
+  ['ui-item-time', 'src/assets/ui/item-time.png'],
+  ['ui-star', 'src/assets/ui/star.png'],
+];
 const FOOD_SLOTS = [
   { x: 4, y: 9 },
   { x: 41, y: 9 },
@@ -48,10 +55,10 @@ const LEVELS = Array.from({ length: 20 }, (_, i) => {
 });
 
 const ITEM_DEFS = [
-  { key: 'shuffle', icon: 'S', label: 'MIX' },
-  { key: 'undo', icon: 'R', label: 'UNDO' },
-  { key: 'open', icon: 'H', label: 'OPEN' },
-  { key: 'time', icon: 'F', label: '+10s' },
+  { key: 'shuffle', texture: 'ui-item-shuffle', label: 'MIX', desc: 'Shuffle' },
+  { key: 'undo', texture: 'ui-item-undo', label: 'UNDO', desc: 'Back 1' },
+  { key: 'open', texture: 'ui-item-open', label: 'OPEN', desc: 'Open grill' },
+  { key: 'time', texture: 'ui-item-time', label: '+10s', desc: 'Add time' },
 ];
 
 export default class GameScene extends Phaser.Scene {
@@ -62,6 +69,9 @@ export default class GameScene extends Phaser.Scene {
   preload() {
     for (const food of FOODS) {
       this.load.image(food.texture, food.asset);
+    }
+    for (const [key, asset] of UI_ASSETS) {
+      this.load.image(key, asset);
     }
   }
 
@@ -101,7 +111,7 @@ export default class GameScene extends Phaser.Scene {
       padding: { x: 18, y: 8 },
     }).setOrigin(0.5).setDepth(20);
 
-    const start = this.add.text(W / 2, 370, 'START', {
+    const start = this.add.text(W / 2, 350, 'START', {
       fontSize: '30px',
       fill: '#ffdd00',
       fontFamily: 'sans-serif',
@@ -117,7 +127,23 @@ export default class GameScene extends Phaser.Scene {
       this._startLevel(1);
     });
 
-    const records = this.add.text(W / 2, 450, 'RECORDS', {
+    const levels = this.add.text(W / 2, 430, 'LEVELS', {
+      fontSize: '22px',
+      fill: '#ffdd00',
+      fontFamily: 'sans-serif',
+      fontStyle: 'bold',
+      stroke: '#000',
+      strokeThickness: 3,
+      backgroundColor: '#7a3300',
+      padding: { x: 31, y: 12 },
+    }).setOrigin(0.5).setDepth(20).setInteractive({ useHandCursor: true });
+    levels.on('pointerdown', (pointer, localX, localY, event) => {
+      event?.stopPropagation();
+      if (this.gameState !== 'title') return;
+      this._showLevelSelectScreen();
+    });
+
+    const records = this.add.text(W / 2, 495, 'RECORDS', {
       fontSize: '22px',
       fill: '#fff5d6',
       fontFamily: 'sans-serif',
@@ -134,8 +160,13 @@ export default class GameScene extends Phaser.Scene {
     });
   }
 
-  _showRecordsScreen() {
-    this.gameState = 'records';
+  _showLevelSelectScreen() {
+    this._showRecordsScreen({ selectMode: true });
+  }
+
+  _showRecordsScreen(options = {}) {
+    const selectMode = Boolean(options.selectMode);
+    this.gameState = selectMode ? 'levelSelect' : 'records';
     this._clearDragVisuals();
     this.gameTimer?.remove();
     this.children.removeAll(true);
@@ -143,7 +174,7 @@ export default class GameScene extends Phaser.Scene {
 
     const W = this.scale.width;
     const records = this._loadRecords();
-    this.add.text(W / 2, 54, 'LEVEL RECORDS', {
+    this.add.text(W / 2, 54, selectMode ? 'SELECT LEVEL' : 'LEVEL RECORDS', {
       fontSize: '28px',
       fill: '#fff5d6',
       fontFamily: 'sans-serif',
@@ -159,28 +190,30 @@ export default class GameScene extends Phaser.Scene {
       const x = col === 0 ? 22 : 200;
       const y = 104 + row * 45;
       const record = records[level];
-      const stars = record ? this._formatStars(record.stars) : '---';
-      const moves = record ? `${record.moves}手` : '--手';
+      const unlocked = this._isLevelUnlocked(level, records);
+      const moves = record ? `Moves ${record.moves}` : 'Moves --';
       const time = record ? this._formatTime(record.timeLeft) : '--:--';
 
-      this.add.rectangle(x + 76, y + 16, 150, 36, 0xf2ead8, 0.9)
+      const card = this.add.rectangle(x + 76, y + 16, 150, 36, unlocked ? 0xf2ead8 : 0x9a8a70, 0.9)
         .setDepth(18)
         .setStrokeStyle(1, 0x7a4e10);
+      if (unlocked) {
+        card.setInteractive({ useHandCursor: true });
+        card.on('pointerdown', (pointer, localX, localY, event) => {
+          event?.stopPropagation();
+          this._startLevel(level);
+        });
+      }
       this.add.text(x, y, `Lv.${String(level).padStart(2, '0')}`, {
         fontSize: '13px',
-        fill: '#5a3010',
+        fill: unlocked ? '#5a3010' : '#5a5248',
         fontFamily: 'sans-serif',
         fontStyle: 'bold',
       }).setDepth(20);
-      this.add.text(x + 42, y, stars, {
-        fontSize: '14px',
-        fill: '#d88a00',
-        fontFamily: 'monospace',
-        fontStyle: 'bold',
-      }).setDepth(20);
+      this._drawStarRating(x + 70, y + 7, record?.stars ?? 0, 14, 20);
       this.add.text(x + 42, y + 18, `${moves} ${time}`, {
-        fontSize: '12px',
-        fill: '#5a3010',
+        fontSize: '11px',
+        fill: unlocked ? '#5a3010' : '#5a5248',
         fontFamily: 'sans-serif',
       }).setDepth(20);
     }
@@ -199,6 +232,10 @@ export default class GameScene extends Phaser.Scene {
       event?.stopPropagation();
       this._showTitleScreen();
     });
+  }
+
+  _isLevelUnlocked(level, records = this._loadRecords()) {
+    return level === 1 || Boolean(records[level]) || Boolean(records[level - 1]);
   }
 
   _startLevel(levelNumber) {
@@ -349,15 +386,52 @@ export default class GameScene extends Phaser.Scene {
       padding: { x: 10, y: 6 },
     }).setOrigin(1, 0).setDepth(10);
 
-    this.add.circle(W - 22, 74, 17, 0xd4a860)
+    const pauseButton = this.add.circle(W - 22, 74, 17, 0xd4a860)
       .setDepth(10)
       .setInteractive();
+    pauseButton.on('pointerdown', (pointer, localX, localY, event) => {
+      event?.stopPropagation();
+      this._showPauseMenu();
+    });
     this.add.text(W - 22, 74, 'II', {
       fontSize: '14px',
       fill: '#5a3010',
       fontFamily: 'monospace',
       fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(11);
+  }
+
+  _showPauseMenu() {
+    if (this.gameState !== 'playing') return;
+    this.gameState = 'paused';
+    this.gameTimer.paused = true;
+    this._clearDragVisuals();
+    this.selected = null;
+    this._redrawAll();
+
+    const W = this.scale.width;
+    this.pauseOverlay = [];
+    this.pauseOverlay.push(this.add.rectangle(W / 2, 406, W, 812, 0x000000, 0.62).setDepth(40));
+    this.pauseOverlay.push(this.add.text(W / 2, 250, 'PAUSED', {
+      fontSize: '46px',
+      fill: '#ffee00',
+      fontFamily: 'sans-serif',
+      stroke: '#000',
+      strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(41));
+    this._addOverlayButton(W / 2, 345, 'RESUME', 41, () => this._resumeFromPause(), this.pauseOverlay);
+    this._addOverlayButton(W / 2, 420, 'RETRY', 41, () => this._startLevel(this.levelConfig.level), this.pauseOverlay);
+    this._addOverlayButton(W / 2, 495, 'TITLE', 41, () => this._showTitleScreen(), this.pauseOverlay);
+  }
+
+  _resumeFromPause() {
+    if (this.gameState !== 'paused') return;
+    this.pauseOverlay?.forEach(obj => obj.destroy());
+    this.pauseOverlay = null;
+    this.gameState = 'playing';
+    this.isAnimating = false;
+    this.gameTimer.paused = false;
+    this._redrawItemBar();
   }
 
   _buildGrills() {
@@ -497,7 +571,7 @@ export default class GameScene extends Phaser.Scene {
   _buildItemBar() {
     const W = this.scale.width;
     const barY = GRID_Y + ROWS * CELL_H + 14;
-    this.add.rectangle(W / 2, barY + 32, W, 68, 0xb07830).setDepth(5);
+    this.add.rectangle(W / 2, barY + 42, W, 86, 0xb07830).setDepth(5);
     this.add.rectangle(W / 2, barY, W, 2, 0x7a4e10).setDepth(5);
     this.itemBarY = barY;
     this.itemBarObjs = [];
@@ -513,7 +587,7 @@ export default class GameScene extends Phaser.Scene {
       const bx = 44 + i * 74;
       const uses = this.itemUses?.[item.key] ?? 0;
       const enabled = uses > 0 && this.gameState === 'playing';
-      const circle = this.add.circle(bx, this.itemBarY + 30, 26, enabled ? 0xd4b07a : 0x9a7450)
+      const circle = this.add.circle(bx, this.itemBarY + 26, 24, enabled ? 0xd4b07a : 0x9a7450)
         .setDepth(6)
         .setStrokeStyle(2, 0x7a5030)
         .setInteractive({ useHandCursor: enabled });
@@ -522,25 +596,28 @@ export default class GameScene extends Phaser.Scene {
         this._useItem(item.key);
       });
 
-      const icon = this.add.text(bx, this.itemBarY + 23, item.icon, {
-        fontSize: '18px',
-        fill: '#5a3010',
-        fontFamily: 'sans-serif',
-        fontStyle: 'bold',
-      }).setOrigin(0.5).setDepth(7);
-      const label = this.add.text(bx, this.itemBarY + 42, item.label, {
+      const icon = this.add.image(bx, this.itemBarY + 26, item.texture)
+        .setDisplaySize(46, 46)
+        .setAlpha(enabled ? 1 : 0.48)
+        .setDepth(7);
+      const label = this.add.text(bx, this.itemBarY + 52, item.label, {
         fontSize: '9px',
         fill: '#5a3010',
         fontFamily: 'sans-serif',
         fontStyle: 'bold',
       }).setOrigin(0.5).setDepth(7);
-      const badge = this.add.circle(bx + 18, this.itemBarY + 10, 9, uses > 0 ? 0x228822 : 0x666666).setDepth(8);
-      const badgeText = this.add.text(bx + 18, this.itemBarY + 10, String(uses), {
+      const desc = this.add.text(bx, this.itemBarY + 66, item.desc, {
+        fontSize: '8px',
+        fill: '#3f250d',
+        fontFamily: 'sans-serif',
+      }).setOrigin(0.5).setDepth(7);
+      const badge = this.add.circle(bx + 18, this.itemBarY + 8, 9, uses > 0 ? 0x228822 : 0x666666).setDepth(8);
+      const badgeText = this.add.text(bx + 18, this.itemBarY + 8, String(uses), {
         fontSize: '10px',
         fill: '#fff',
         fontFamily: 'sans-serif',
       }).setOrigin(0.5).setDepth(9);
-      this.itemBarObjs.push(circle, icon, label, badge, badgeText);
+      this.itemBarObjs.push(circle, icon, label, desc, badge, badgeText);
     }
   }
 
@@ -905,6 +982,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _onSecondTick() {
+    if (this.gameState !== 'playing') return;
     this.timeLeft--;
     this._updateHUD();
     if (this.timeLeft <= 0) {
@@ -996,6 +1074,20 @@ export default class GameScene extends Phaser.Scene {
     return 1;
   }
 
+  _drawStarRating(x, y, stars, size = 34, depth = 31) {
+    const totalW = size * 3 + 6 * 2;
+    const startX = x - totalW / 2 + size / 2;
+    const objs = [];
+    for (let i = 0; i < 3; i++) {
+      const star = this.add.image(startX + i * (size + 6), y, 'ui-star')
+        .setDisplaySize(size, size)
+        .setAlpha(i < stars ? 1 : 0.25)
+        .setDepth(depth);
+      objs.push(star);
+    }
+    return objs;
+  }
+
   _formatStars(stars) {
     return '*'.repeat(stars).padEnd(3, '-');
   }
@@ -1043,14 +1135,7 @@ export default class GameScene extends Phaser.Scene {
       stroke: '#000',
       strokeThickness: 5,
     }).setOrigin(0.5).setDepth(31);
-    this.add.text(W / 2, 302, this._formatStars(stars), {
-      fontSize: '38px',
-      fill: '#ffcc22',
-      fontFamily: 'monospace',
-      fontStyle: 'bold',
-      stroke: '#3a2100',
-      strokeThickness: 3,
-    }).setOrigin(0.5).setDepth(31);
+    this._drawStarRating(W / 2, 305, stars, 46, 31);
     const lines = [
       `MOVES: ${this.moves}`,
       `TIME LEFT: ${this._formatTime(Math.max(0, this.timeLeft))}`,
@@ -1064,7 +1149,14 @@ export default class GameScene extends Phaser.Scene {
         fontFamily: 'sans-serif',
       }).setOrigin(0.5).setDepth(31);
     }
-    this.add.text(W / 2, 500, buttonText, {
+    this._addOverlayButton(W / 2, 500, buttonText, 31, onButton);
+    if (buttonText !== 'TITLE') {
+      this._addOverlayButton(W / 2, 570, 'TITLE', 31, () => this._showTitleScreen());
+    }
+  }
+
+  _addOverlayButton(x, y, buttonText, depth, onButton, collector = null) {
+    const button = this.add.text(x, y, buttonText, {
       fontSize: '22px',
       fill: '#ffdd00',
       fontFamily: 'sans-serif',
@@ -1072,11 +1164,13 @@ export default class GameScene extends Phaser.Scene {
       strokeThickness: 2,
       backgroundColor: '#7a3300',
       padding: { x: 24, y: 12 },
-    }).setOrigin(0.5).setDepth(31).setInteractive({ useHandCursor: true })
+    }).setOrigin(0.5).setDepth(depth).setInteractive({ useHandCursor: true })
       .on('pointerdown', (pointer, localX, localY, event) => {
         event?.stopPropagation();
         onButton();
       });
+    collector?.push(button);
+    return button;
   }
 
   _overlay(title, titleColor, sub, buttonText, onButton) {
@@ -1096,18 +1190,7 @@ export default class GameScene extends Phaser.Scene {
       fill: '#fff',
       fontFamily: 'sans-serif',
     }).setOrigin(0.5).setDepth(31);
-    this.add.text(W / 2, 452, buttonText, {
-      fontSize: '22px',
-      fill: '#ffdd00',
-      fontFamily: 'sans-serif',
-      stroke: '#000',
-      strokeThickness: 2,
-      backgroundColor: '#7a3300',
-      padding: { x: 24, y: 12 },
-    }).setOrigin(0.5).setDepth(31).setInteractive({ useHandCursor: true })
-      .on('pointerdown', (pointer, localX, localY, event) => {
-        event?.stopPropagation();
-        onButton();
-      });
+    this._addOverlayButton(W / 2, 452, buttonText, 31, onButton);
+    this._addOverlayButton(W / 2, 522, 'TITLE', 31, () => this._showTitleScreen());
   }
 }
