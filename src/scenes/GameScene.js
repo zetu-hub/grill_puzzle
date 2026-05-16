@@ -18,7 +18,7 @@ const ICON_SIZE = 32;
 const FOOD_HIT_PAD = 12;
 const DRAG_START_DISTANCE = 3;
 const DRAG_GHOST_SIZE = 50;
-const DRAG_GHOST_OFFSET_Y = -42;
+const DRAG_GHOST_OFFSET_Y = 0;
 const DROP_HIT_PAD = 10;
 const RECORDS_KEY = 'grillPuzzleRecordsV1';
 const UI_ASSETS = [
@@ -476,9 +476,13 @@ export default class GameScene extends Phaser.Scene {
       this.grillGfx.strokeRoundedRect(gx - 3, gy - 3, GRILL_W + 6, GRILL_H + 6, 9);
     }
     if (isDropTarget) {
-      const canDrop = this._filledCount(grill.foods) < CAPACITY && this.dragState?.fromIdx !== idx;
+      const targetSlot = this.dropSlot ?? 0;
+      const canDrop = !grill.foods[targetSlot] && this.dragState?.fromIdx !== idx;
       this.grillGfx.lineStyle(3, canDrop ? 0x66ff66 : 0xff3333, 1);
       this.grillGfx.strokeRoundedRect(gx - 4, gy - 4, GRILL_W + 8, GRILL_H + 8, 10);
+      const { x: sx, y: sy } = FOOD_SLOTS[targetSlot];
+      this.grillGfx.fillStyle(canDrop ? 0x66ff66 : 0xff3333, 0.24);
+      this.grillGfx.fillRoundedRect(gx + sx - 2, gy + sy - 2, ICON_SIZE + 4, ICON_SIZE + 4, 8);
     }
 
     for (let fi = 0; fi < CAPACITY; fi++) {
@@ -593,7 +597,7 @@ export default class GameScene extends Phaser.Scene {
         .setInteractive({ useHandCursor: enabled });
       circle.on('pointerdown', (pointer, localX, localY, event) => {
         event?.stopPropagation();
-        this._useItem(item.key);
+        this._useItem(item.key, pointer);
       });
 
       const icon = this.add.image(bx, this.itemBarY + 26, item.texture)
@@ -621,8 +625,9 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
-  _useItem(key) {
+  _useItem(key, pointer = null) {
     if (this.gameState !== 'playing' || this.isAnimating || (this.itemUses?.[key] ?? 0) <= 0) return;
+    if (pointer && !this._isPointerOnItemButton(key, pointer.x, pointer.y)) return;
 
     let used = false;
     if (key === 'shuffle') used = this._useShuffleItem();
@@ -638,6 +643,14 @@ export default class GameScene extends Phaser.Scene {
     this._redrawAll();
     this._redrawItemBar();
     this._updateHUD();
+  }
+
+  _isPointerOnItemButton(key, px, py) {
+    const index = ITEM_DEFS.findIndex(item => item.key === key);
+    if (index < 0 || !this.itemBarY) return false;
+    const bx = 44 + index * 74;
+    const by = this.itemBarY + 26;
+    return Math.hypot(px - bx, py - by) <= 24;
   }
 
   _useShuffleItem() {
@@ -701,7 +714,7 @@ export default class GameScene extends Phaser.Scene {
 
     const grillIdx = this._findGrillBodyAt(px, py);
     if (grillIdx !== null) {
-      this._onGrillBodyTap(grillIdx);
+      this._onGrillBodyTap(grillIdx, px, py);
       return;
     }
 
@@ -726,8 +739,10 @@ export default class GameScene extends Phaser.Scene {
 
     this._positionDragGhost(pointer);
     const nextDropTarget = this._findDropTargetAt(pointer.x, pointer.y);
-    if (nextDropTarget !== this.dropTarget) {
+    const nextDropSlot = nextDropTarget === null ? null : this._findPreferredSlotAt(pointer.x, pointer.y, nextDropTarget);
+    if (nextDropTarget !== this.dropTarget || nextDropSlot !== this.dropSlot) {
       this.dropTarget = nextDropTarget;
+      this.dropSlot = nextDropSlot;
       this._redrawAll();
       this._positionDragGhost(pointer);
     }
@@ -747,7 +762,8 @@ export default class GameScene extends Phaser.Scene {
     }
 
     if (dropIdx !== null && dropIdx !== drag.fromIdx) {
-      this._moveFood(drag.fromIdx, drag.foodIdx, dropIdx, drag.foodIdx);
+      const dropSlot = this._findPreferredSlotAt(pointer.x, pointer.y, dropIdx);
+      this._moveFood(drag.fromIdx, drag.foodIdx, dropIdx, dropSlot);
       return;
     }
 
@@ -799,6 +815,21 @@ export default class GameScene extends Phaser.Scene {
     return null;
   }
 
+  _findPreferredSlotAt(px, py, grillIdx) {
+    const { gx } = this._grillPos(grillIdx);
+    let bestSlot = 0;
+    let bestDistance = Infinity;
+    for (let i = 0; i < CAPACITY; i++) {
+      const centerX = gx + FOOD_SLOTS[i].x + ICON_SIZE / 2;
+      const distance = Math.abs(px - centerX);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestSlot = i;
+      }
+    }
+    return bestSlot;
+  }
+
   _beginFoodDrag(pointer, grillIdx, foodIdx) {
     this._clearDragVisuals();
     this.dragState = {
@@ -832,6 +863,7 @@ export default class GameScene extends Phaser.Scene {
     this.dragState?.ghost?.destroy();
     this.dragState = null;
     this.dropTarget = null;
+    this.dropSlot = null;
   }
 
   _onFoodTap(grillIdx, foodIdx) {
@@ -842,25 +874,25 @@ export default class GameScene extends Phaser.Scene {
       this.selected = null;
       this._redrawAll();
     } else {
-      this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx, this.selected.foodIdx);
+      this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx, foodIdx);
     }
   }
 
-  _onGrillBodyTap(grillIdx) {
+  _onGrillBodyTap(grillIdx, px, py) {
     if (!this.selected) return;
     if (this.selected.grillIdx === grillIdx) {
       this.selected = null;
       this._redrawAll();
       return;
     }
-    this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx, this.selected.foodIdx);
+    this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx, this._findPreferredSlotAt(px, py, grillIdx));
   }
 
   _moveFood(fromIdx, fromFoodIdx, toIdx, preferredSlot = fromFoodIdx) {
     const src = this.grills[fromIdx];
     const dst = this.grills[toIdx];
 
-    if (src.locked || dst.locked || this._filledCount(dst.foods) >= CAPACITY) {
+    if (src.locked || dst.locked || preferredSlot < 0 || preferredSlot >= CAPACITY || dst.foods[preferredSlot]) {
       this._shakeFeedback(toIdx);
       this.selected = null;
       this._redrawAll();
@@ -871,9 +903,8 @@ export default class GameScene extends Phaser.Scene {
     if (!foodId) return;
 
     const snapshot = this._snapshotState();
-    const toFoodIdx = this._resolveDropSlot(dst.foods, preferredSlot);
     src.foods[fromFoodIdx] = null;
-    dst.foods[toFoodIdx] = foodId;
+    dst.foods[preferredSlot] = foodId;
     this.selected = null;
     this.moves += 1;
     this.moveHistory.push(snapshot);
@@ -883,11 +914,6 @@ export default class GameScene extends Phaser.Scene {
     this._redrawAll();
     this._checkMatch(toIdx);
     if (!this.isAnimating && refilledSource) this._checkMatch(fromIdx);
-  }
-
-  _resolveDropSlot(foods, preferredSlot) {
-    if (!foods[preferredSlot]) return preferredSlot;
-    return foods.findIndex(id => !id);
   }
 
   _snapshotState() {
