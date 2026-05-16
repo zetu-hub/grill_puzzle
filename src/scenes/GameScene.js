@@ -18,8 +18,9 @@ const ICON_SIZE = 32;
 const FOOD_HIT_PAD = 12;
 const DRAG_START_DISTANCE = 3;
 const DRAG_GHOST_SIZE = 50;
-const DRAG_GHOST_OFFSET_Y = 0;
+const DRAG_GHOST_OFFSET_Y = -42;
 const DROP_HIT_PAD = 10;
+const RECORDS_KEY = 'grillPuzzleRecordsV1';
 const FOOD_SLOTS = [
   { x: 4, y: 9 },
   { x: 41, y: 9 },
@@ -45,6 +46,13 @@ const LEVELS = Array.from({ length: 20 }, (_, i) => {
     foodIds: FOODS.slice(0, foodCount).map(food => food.id),
   };
 });
+
+const ITEM_DEFS = [
+  { key: 'shuffle', icon: 'S', label: 'MIX' },
+  { key: 'undo', icon: 'R', label: 'UNDO' },
+  { key: 'open', icon: 'H', label: 'OPEN' },
+  { key: 'time', icon: 'F', label: '+10s' },
+];
 
 export default class GameScene extends Phaser.Scene {
   constructor() {
@@ -93,7 +101,7 @@ export default class GameScene extends Phaser.Scene {
       padding: { x: 18, y: 8 },
     }).setOrigin(0.5).setDepth(20);
 
-    const start = this.add.text(W / 2, 390, 'START', {
+    const start = this.add.text(W / 2, 370, 'START', {
       fontSize: '30px',
       fill: '#ffdd00',
       fontFamily: 'sans-serif',
@@ -107,6 +115,89 @@ export default class GameScene extends Phaser.Scene {
       event?.stopPropagation();
       if (this.gameState !== 'title') return;
       this._startLevel(1);
+    });
+
+    const records = this.add.text(W / 2, 450, 'RECORDS', {
+      fontSize: '22px',
+      fill: '#fff5d6',
+      fontFamily: 'sans-serif',
+      fontStyle: 'bold',
+      stroke: '#000',
+      strokeThickness: 3,
+      backgroundColor: '#5b3a16',
+      padding: { x: 26, y: 12 },
+    }).setOrigin(0.5).setDepth(20).setInteractive({ useHandCursor: true });
+    records.on('pointerdown', (pointer, localX, localY, event) => {
+      event?.stopPropagation();
+      if (this.gameState !== 'title') return;
+      this._showRecordsScreen();
+    });
+  }
+
+  _showRecordsScreen() {
+    this.gameState = 'records';
+    this._clearDragVisuals();
+    this.gameTimer?.remove();
+    this.children.removeAll(true);
+    this._drawBackground();
+
+    const W = this.scale.width;
+    const records = this._loadRecords();
+    this.add.text(W / 2, 54, 'LEVEL RECORDS', {
+      fontSize: '28px',
+      fill: '#fff5d6',
+      fontFamily: 'sans-serif',
+      fontStyle: 'bold',
+      stroke: '#5a2b00',
+      strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(20);
+
+    for (let i = 0; i < LEVELS.length; i++) {
+      const level = i + 1;
+      const col = i < 10 ? 0 : 1;
+      const row = i % 10;
+      const x = col === 0 ? 22 : 200;
+      const y = 104 + row * 45;
+      const record = records[level];
+      const stars = record ? this._formatStars(record.stars) : '---';
+      const moves = record ? `${record.moves}手` : '--手';
+      const time = record ? this._formatTime(record.timeLeft) : '--:--';
+
+      this.add.rectangle(x + 76, y + 16, 150, 36, 0xf2ead8, 0.9)
+        .setDepth(18)
+        .setStrokeStyle(1, 0x7a4e10);
+      this.add.text(x, y, `Lv.${String(level).padStart(2, '0')}`, {
+        fontSize: '13px',
+        fill: '#5a3010',
+        fontFamily: 'sans-serif',
+        fontStyle: 'bold',
+      }).setDepth(20);
+      this.add.text(x + 42, y, stars, {
+        fontSize: '14px',
+        fill: '#d88a00',
+        fontFamily: 'monospace',
+        fontStyle: 'bold',
+      }).setDepth(20);
+      this.add.text(x + 42, y + 18, `${moves} ${time}`, {
+        fontSize: '12px',
+        fill: '#5a3010',
+        fontFamily: 'sans-serif',
+      }).setDepth(20);
+    }
+
+    const back = this.add.text(W / 2, 595, 'BACK', {
+      fontSize: '22px',
+      fill: '#ffdd00',
+      fontFamily: 'sans-serif',
+      fontStyle: 'bold',
+      stroke: '#000',
+      strokeThickness: 3,
+      backgroundColor: '#7a3300',
+      padding: { x: 26, y: 12 },
+    }).setOrigin(0.5).setDepth(20).setInteractive({ useHandCursor: true });
+    back.on('pointerdown', (pointer, localX, localY, event) => {
+      event?.stopPropagation();
+      this._showTitleScreen();
     });
   }
 
@@ -130,6 +221,10 @@ export default class GameScene extends Phaser.Scene {
     this.clearedSets = 0;
     this.timeLeft = this.levelConfig.timeSecs;
     this.isAnimating = false;
+    this.moves = 0;
+    this.moveHistory = [];
+    this.helperUsed = false;
+    this.itemUses = Object.fromEntries(ITEM_DEFS.map(item => [item.key, 1]));
 
     this._drawBackground();
     this._buildHUD();
@@ -404,37 +499,117 @@ export default class GameScene extends Phaser.Scene {
     const barY = GRID_Y + ROWS * CELL_H + 14;
     this.add.rectangle(W / 2, barY + 32, W, 68, 0xb07830).setDepth(5);
     this.add.rectangle(W / 2, barY, W, 2, 0x7a4e10).setDepth(5);
+    this.itemBarY = barY;
+    this.itemBarObjs = [];
+    this._redrawItemBar();
+  }
 
-    const icons = ['S', 'R', 'H', 'F'];
-    const labels = ['', '', 'Lv.8', 'Lv.20'];
-    const locked = [false, false, true, true];
-    for (let i = 0; i < 4; i++) {
+  _redrawItemBar() {
+    this.itemBarObjs?.forEach(obj => obj.destroy());
+    this.itemBarObjs = [];
+
+    for (let i = 0; i < ITEM_DEFS.length; i++) {
+      const item = ITEM_DEFS[i];
       const bx = 44 + i * 74;
-      this.add.circle(bx, barY + 30, 26, locked[i] ? 0x9a7450 : 0xd4b07a)
+      const uses = this.itemUses?.[item.key] ?? 0;
+      const enabled = uses > 0 && this.gameState === 'playing';
+      const circle = this.add.circle(bx, this.itemBarY + 30, 26, enabled ? 0xd4b07a : 0x9a7450)
         .setDepth(6)
-        .setStrokeStyle(2, 0x7a5030);
-      this.add.text(bx, barY + 30, icons[i], {
+        .setStrokeStyle(2, 0x7a5030)
+        .setInteractive({ useHandCursor: enabled });
+      circle.on('pointerdown', (pointer, localX, localY, event) => {
+        event?.stopPropagation();
+        this._useItem(item.key);
+      });
+
+      const icon = this.add.text(bx, this.itemBarY + 23, item.icon, {
         fontSize: '18px',
         fill: '#5a3010',
         fontFamily: 'sans-serif',
         fontStyle: 'bold',
       }).setOrigin(0.5).setDepth(7);
-      if (labels[i]) {
-        this.add.text(bx, barY + 56, labels[i], {
-          fontSize: '10px',
-          fill: '#5a3010',
-          fontFamily: 'sans-serif',
-        }).setOrigin(0.5).setDepth(7);
-      }
-      if (!locked[i]) {
-        this.add.circle(bx + 18, barY + 10, 9, 0x228822).setDepth(8);
-        this.add.text(bx + 18, barY + 10, '1', {
-          fontSize: '10px',
-          fill: '#fff',
-          fontFamily: 'sans-serif',
-        }).setOrigin(0.5).setDepth(9);
+      const label = this.add.text(bx, this.itemBarY + 42, item.label, {
+        fontSize: '9px',
+        fill: '#5a3010',
+        fontFamily: 'sans-serif',
+        fontStyle: 'bold',
+      }).setOrigin(0.5).setDepth(7);
+      const badge = this.add.circle(bx + 18, this.itemBarY + 10, 9, uses > 0 ? 0x228822 : 0x666666).setDepth(8);
+      const badgeText = this.add.text(bx + 18, this.itemBarY + 10, String(uses), {
+        fontSize: '10px',
+        fill: '#fff',
+        fontFamily: 'sans-serif',
+      }).setOrigin(0.5).setDepth(9);
+      this.itemBarObjs.push(circle, icon, label, badge, badgeText);
+    }
+  }
+
+  _useItem(key) {
+    if (this.gameState !== 'playing' || this.isAnimating || (this.itemUses?.[key] ?? 0) <= 0) return;
+
+    let used = false;
+    if (key === 'shuffle') used = this._useShuffleItem();
+    if (key === 'undo') used = this._useUndoItem();
+    if (key === 'open') used = this._useOpenItem();
+    if (key === 'time') used = this._useTimeItem();
+
+    if (!used) return;
+    this.itemUses[key] -= 1;
+    this.helperUsed = true;
+    this.selected = null;
+    this._clearDragVisuals();
+    this._redrawAll();
+    this._redrawItemBar();
+    this._updateHUD();
+  }
+
+  _useShuffleItem() {
+    const slots = [];
+    const ids = [];
+    for (const grill of this.grills) {
+      if (grill.locked) continue;
+      for (let i = 0; i < CAPACITY; i++) {
+        if (!grill.foods[i]) continue;
+        slots.push({ grill, index: i });
+        ids.push(grill.foods[i]);
       }
     }
+    if (ids.length < 2) return false;
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const shuffled = Phaser.Utils.Array.Shuffle([...ids]);
+      slots.forEach((slot, index) => {
+        slot.grill.foods[slot.index] = shuffled[index];
+      });
+      if (!this.grills.some(grill => !grill.locked && findMatchingFoods(grill.foods).length > 0)) {
+        return true;
+      }
+    }
+    slots.forEach((slot, index) => {
+      slot.grill.foods[slot.index] = ids[index];
+    });
+    return false;
+  }
+
+  _useUndoItem() {
+    const snapshot = this.moveHistory.pop();
+    if (!snapshot) return false;
+    this._restoreSnapshot(snapshot);
+    return true;
+  }
+
+  _useOpenItem() {
+    const grill = this.grills.find(candidate => candidate.locked);
+    if (!grill) return false;
+    grill.locked = false;
+    grill.foods = this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY - 1));
+    grill.plateFoods = this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY));
+    return true;
+  }
+
+  _useTimeItem() {
+    this.timeLeft += 10;
+    return true;
   }
 
   _onPointerDown(pointer) {
@@ -618,10 +793,14 @@ export default class GameScene extends Phaser.Scene {
     const foodId = src.foods[fromFoodIdx];
     if (!foodId) return;
 
+    const snapshot = this._snapshotState();
     const toFoodIdx = this._resolveDropSlot(dst.foods, preferredSlot);
     src.foods[fromFoodIdx] = null;
     dst.foods[toFoodIdx] = foodId;
     this.selected = null;
+    this.moves += 1;
+    this.moveHistory.push(snapshot);
+    if (this.moveHistory.length > 20) this.moveHistory.shift();
 
     const refilledSource = this._refillEmptyGrill(fromIdx);
     this._redrawAll();
@@ -632,6 +811,36 @@ export default class GameScene extends Phaser.Scene {
   _resolveDropSlot(foods, preferredSlot) {
     if (!foods[preferredSlot]) return preferredSlot;
     return foods.findIndex(id => !id);
+  }
+
+  _snapshotState() {
+    return {
+      grills: this.grills.map(grill => ({
+        id: grill.id,
+        locked: grill.locked,
+        foods: [...grill.foods],
+        plateFoods: [...grill.plateFoods],
+      })),
+      stockFoods: [...this.stockFoods],
+      score: this.score,
+      clearedSets: this.clearedSets,
+      timeLeft: this.timeLeft,
+      moves: this.moves,
+    };
+  }
+
+  _restoreSnapshot(snapshot) {
+    this.grills = snapshot.grills.map(grill => ({
+      id: grill.id,
+      locked: grill.locked,
+      foods: [...grill.foods],
+      plateFoods: [...grill.plateFoods],
+    }));
+    this.stockFoods = [...snapshot.stockFoods];
+    this.score = snapshot.score;
+    this.clearedSets = snapshot.clearedSets;
+    this.timeLeft = snapshot.timeLeft;
+    this.moves = snapshot.moves;
   }
 
   _checkMatch(grillIdx) {
@@ -763,23 +972,111 @@ export default class GameScene extends Phaser.Scene {
 
   _onLevelClear() {
     this.gameTimer?.remove();
+    const stars = this._calculateStars();
+    this._saveLevelRecord(stars);
     if (this.levelConfig.level >= LEVELS.length) {
-      this._overlay('ALL CLEAR!', '#ffee00', `SCORE: ${this.score}`, 'TITLE', () => this._showTitleScreen());
+      this._resultOverlay('ALL CLEAR!', 'TITLE', () => this._showTitleScreen(), stars);
       return;
     }
-    this._overlay(
-      'LEVEL CLEAR!',
-      '#ffee00',
-      `NEXT: Lv.${this.levelConfig.level + 1}`,
-      'NEXT',
-      () => this._startLevel(this.levelConfig.level + 1),
-    );
+    this._resultOverlay('LEVEL CLEAR!', 'NEXT', () => this._startLevel(this.levelConfig.level + 1), stars);
   }
 
   _onTimeUp() {
-    this._overlay('TIME UP!', '#ff4444', `${this.clearedSets} / ${this.levelConfig.targetSets}`, 'RETRY', () => {
+    this._overlay('TIME UP!', '#ff4444', `${this.clearedSets} / ${this.levelConfig.targetSets}  MOVES: ${this.moves}`, 'RETRY', () => {
       this._startLevel(this.levelConfig.level);
     });
+  }
+
+  _calculateStars() {
+    if (this.helperUsed) return 1;
+    const timeRatio = this.timeLeft / this.levelConfig.timeSecs;
+    const parMoves = Math.max(1, this.levelConfig.targetSets * 2);
+    if (timeRatio >= 0.35 && this.moves <= parMoves) return 3;
+    if (timeRatio >= 0.15 && this.moves <= Math.ceil(parMoves * 1.5)) return 2;
+    return 1;
+  }
+
+  _formatStars(stars) {
+    return '*'.repeat(stars).padEnd(3, '-');
+  }
+
+  _loadRecords() {
+    try {
+      return JSON.parse(window.localStorage.getItem(RECORDS_KEY) || '{}');
+    } catch (error) {
+      return {};
+    }
+  }
+
+  _saveLevelRecord(stars) {
+    const records = this._loadRecords();
+    const level = this.levelConfig.level;
+    const current = {
+      stars,
+      moves: this.moves,
+      timeLeft: Math.max(0, this.timeLeft),
+    };
+    const previous = records[level];
+    const isBetter = !previous ||
+      current.stars > previous.stars ||
+      (current.stars === previous.stars && current.timeLeft > previous.timeLeft) ||
+      (current.stars === previous.stars && current.timeLeft === previous.timeLeft && current.moves < previous.moves);
+    if (!isBetter) return;
+
+    records[level] = current;
+    try {
+      window.localStorage.setItem(RECORDS_KEY, JSON.stringify(records));
+    } catch (error) {
+      // Local storage may be unavailable in private browsing. The run can continue without records.
+    }
+  }
+
+  _resultOverlay(title, buttonText, onButton, stars) {
+    const W = this.scale.width;
+    this.gameState = 'overlay';
+    this.isAnimating = true;
+    this.add.rectangle(W / 2, 406, W, 812, 0x000000, 0.62).setDepth(30);
+    this.add.text(W / 2, 230, title, {
+      fontSize: '42px',
+      fill: '#ffee00',
+      fontFamily: 'sans-serif',
+      stroke: '#000',
+      strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(31);
+    this.add.text(W / 2, 302, this._formatStars(stars), {
+      fontSize: '38px',
+      fill: '#ffcc22',
+      fontFamily: 'monospace',
+      fontStyle: 'bold',
+      stroke: '#3a2100',
+      strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(31);
+    const lines = [
+      `MOVES: ${this.moves}`,
+      `TIME LEFT: ${this._formatTime(Math.max(0, this.timeLeft))}`,
+      this.helperUsed ? 'HELPER USED: STAR 1' :
+        (this.levelConfig.level >= LEVELS.length ? 'ALL LEVELS COMPLETE' : `NEXT: Lv.${this.levelConfig.level + 1}`),
+    ];
+    for (let i = 0; i < lines.length; i++) {
+      this.add.text(W / 2, 360 + i * 34, lines[i], {
+        fontSize: '20px',
+        fill: '#fff',
+        fontFamily: 'sans-serif',
+      }).setOrigin(0.5).setDepth(31);
+    }
+    this.add.text(W / 2, 500, buttonText, {
+      fontSize: '22px',
+      fill: '#ffdd00',
+      fontFamily: 'sans-serif',
+      stroke: '#000',
+      strokeThickness: 2,
+      backgroundColor: '#7a3300',
+      padding: { x: 24, y: 12 },
+    }).setOrigin(0.5).setDepth(31).setInteractive({ useHandCursor: true })
+      .on('pointerdown', (pointer, localX, localY, event) => {
+        event?.stopPropagation();
+        onButton();
+      });
   }
 
   _overlay(title, titleColor, sub, buttonText, onButton) {
