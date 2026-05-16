@@ -18,7 +18,7 @@ const ICON_SIZE = 32;
 const FOOD_HIT_PAD = 12;
 const DRAG_START_DISTANCE = 3;
 const DRAG_GHOST_SIZE = 50;
-const DRAG_GHOST_OFFSET_Y = -34;
+const DRAG_GHOST_OFFSET_Y = 0;
 const DROP_HIT_PAD = 10;
 const FOOD_SLOTS = [
   { x: 4, y: 9 },
@@ -32,9 +32,17 @@ const PLATE_H = 36;
 const PLATE_ICON_SIZE = 22;
 const PLATE_OFFSET = GRILL_H + PLATE_GAP;
 
-const GOAL = 30;
-const GAME_SECS = 300;
-const ACTIVE_FOODS = [1, 2, 3, 4, 5];
+const LEVELS = Array.from({ length: 10 }, (_, i) => {
+  const level = i + 1;
+  const targetSets = 10 + i * 2;
+  const foodCount = Math.min(8, 5 + Math.floor(i / 3));
+  return {
+    level,
+    targetSets,
+    timeSecs: Math.ceil(targetSets * 4),
+    foodIds: FOODS.slice(0, foodCount).map(food => food.id),
+  };
+});
 
 export default class GameScene extends Phaser.Scene {
   constructor() {
@@ -48,42 +56,84 @@ export default class GameScene extends Phaser.Scene {
   }
 
   create() {
+    this.game.canvas.style.touchAction = 'none';
+    this.input.on('pointerdown', this._onPointerDown, this);
+    this.input.on('pointermove', this._onPointerMove, this);
+    this.input.on('pointerup', this._onPointerUp, this);
+    this.input.on('pointerupoutside', this._onPointerUp, this);
+    this._showTitleScreen();
+  }
+
+  _showTitleScreen() {
+    this.gameState = 'title';
+    this.grills = null;
+    this.selected = null;
+    this._clearDragVisuals();
+    this.gameTimer?.remove();
+    this.children.removeAll(true);
+    this._drawBackground();
+
+    const W = this.scale.width;
+    this.add.text(W / 2, 180, 'Grill Puzzle', {
+      fontSize: '42px',
+      fill: '#fff5d6',
+      fontFamily: 'sans-serif',
+      fontStyle: 'bold',
+      stroke: '#5a2b00',
+      strokeThickness: 6,
+    }).setOrigin(0.5).setDepth(20);
+
+    this.add.text(W / 2, 250, 'Level 1 - 10', {
+      fontSize: '20px',
+      fill: '#7a4e10',
+      fontFamily: 'sans-serif',
+      backgroundColor: '#f2ead8',
+      padding: { x: 18, y: 8 },
+    }).setOrigin(0.5).setDepth(20);
+
+    const start = this.add.text(W / 2, 390, 'START', {
+      fontSize: '30px',
+      fill: '#ffdd00',
+      fontFamily: 'sans-serif',
+      fontStyle: 'bold',
+      stroke: '#000',
+      strokeThickness: 4,
+      backgroundColor: '#7a3300',
+      padding: { x: 34, y: 16 },
+    }).setOrigin(0.5).setDepth(20).setInteractive({ useHandCursor: true });
+    start.on('pointerdown', (pointer, localX, localY, event) => {
+      event?.stopPropagation();
+      if (this.gameState !== 'title') return;
+      this._startLevel(1);
+    });
+  }
+
+  _startLevel(levelNumber) {
+    this.gameState = 'playing';
+    this.children.removeAll(true);
+
+    this.levelConfig = LEVELS[levelNumber - 1];
+    this.stockFoods = this._buildLevelStock(this.levelConfig);
     this.grills = Array.from({ length: COLS * ROWS }, (_, i) => ({
       id: i,
-      foods: this._randFoods(Phaser.Math.Between(1, CAPACITY)),
-      plateFoods: this._randFoods(Phaser.Math.Between(1, 3)),
+      foods: this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY - 1)),
+      plateFoods: this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY)),
     }));
 
     this.selected = null;
     this.dragState = null;
     this.dropTarget = null;
     this.score = 0;
-    this.cleared = 0;
-    this.timeLeft = GAME_SECS;
+    this.clearedSets = 0;
+    this.timeLeft = this.levelConfig.timeSecs;
     this.isAnimating = false;
 
-    this.game.canvas.style.touchAction = 'none';
-
-    const W = this.scale.width;
-
-    this.add.rectangle(W / 2, 406, W, 812, 0xc8974a);
-    const bgGfx = this.add.graphics().setDepth(0).setAlpha(0.10);
-    for (let r = 0; r < 22; r++) {
-      for (let c = 0; c < 10; c++) {
-        bgGfx.fillStyle(0x7b4f10);
-        bgGfx.fillRect(c * 40 + (r % 2) * 20, r * 40, 20, 20);
-      }
-    }
-
+    this._drawBackground();
     this._buildHUD();
     this._buildGrills();
     this._buildItemBar();
 
-    this.input.on('pointerdown', this._onPointerDown, this);
-    this.input.on('pointermove', this._onPointerMove, this);
-    this.input.on('pointerup', this._onPointerUp, this);
-    this.input.on('pointerupoutside', this._onPointerUp, this);
-
+    this.gameTimer?.remove();
     this.gameTimer = this.time.addEvent({
       delay: 1000,
       loop: true,
@@ -92,12 +142,74 @@ export default class GameScene extends Phaser.Scene {
     });
   }
 
-  _randFood() {
-    return ACTIVE_FOODS[Phaser.Math.Between(0, ACTIVE_FOODS.length - 1)];
+  _drawBackground() {
+    const W = this.scale.width;
+    this.add.rectangle(W / 2, 406, W, 812, 0xc8974a);
+    const bgGfx = this.add.graphics().setDepth(0).setAlpha(0.10);
+    for (let r = 0; r < 22; r++) {
+      for (let c = 0; c < 10; c++) {
+        bgGfx.fillStyle(0x7b4f10);
+        bgGfx.fillRect(c * 40 + (r % 2) * 20, r * 40, 20, 20);
+      }
+    }
   }
 
-  _randFoods(n) {
-    return Array.from({ length: n }, () => this._randFood());
+  _buildLevelStock(levelConfig) {
+    const stock = [];
+    for (let set = 0; set < levelConfig.targetSets; set++) {
+      const id = Phaser.Utils.Array.GetRandom(levelConfig.foodIds);
+      stock.push(id, id, id);
+    }
+    return Phaser.Utils.Array.Shuffle(stock);
+  }
+
+  _takeFoodSlots(requested) {
+    const slots = Array(CAPACITY).fill(null);
+    const count = Math.min(requested, this.stockFoods.length);
+    const positions = Phaser.Utils.Array.Shuffle([0, 1, 2]);
+    for (let i = 0; i < count; i++) {
+      slots[positions[i]] = this._takeFoodAvoidingGeneratedTriple(slots);
+    }
+    return slots;
+  }
+
+  _takeFoodAvoidingGeneratedTriple(slots) {
+    if (this.stockFoods.length === 0) return null;
+    for (let i = this.stockFoods.length - 1; i >= 0; i--) {
+      const candidate = this.stockFoods[i];
+      if (!this._wouldCreateTriple(slots, candidate)) {
+        this.stockFoods.splice(i, 1);
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  _wouldCreateTriple(slots, candidate) {
+    if (!candidate) return false;
+    const counts = {};
+    for (const id of slots) {
+      if (!id) continue;
+      counts[id] = (counts[id] || 0) + 1;
+    }
+    return (counts[candidate] || 0) >= 2;
+  }
+
+  _filledCount(foods) {
+    return foods.filter(Boolean).length;
+  }
+
+  _hasAnyFoods(foods) {
+    return foods.some(Boolean);
+  }
+
+  _remainingFoodCount() {
+    let total = this.stockFoods.length;
+    for (const grill of this.grills) {
+      total += this._filledCount(grill.foods);
+      total += this._filledCount(grill.plateFoods);
+    }
+    return total;
   }
 
   _grillPos(idx) {
@@ -114,7 +226,7 @@ export default class GameScene extends Phaser.Scene {
     this.add.rectangle(W / 2, 47, W, 94, 0xb07830).setDepth(9);
     this.add.rectangle(W / 2, 94, W, 2, 0x7a4e10).setDepth(9);
 
-    this.add.text(18, 28, 'Lv.1', {
+    this.levelText = this.add.text(18, 28, `Lv.${this.levelConfig.level}`, {
       fontSize: '18px',
       fill: '#fff',
       fontFamily: 'sans-serif',
@@ -122,7 +234,7 @@ export default class GameScene extends Phaser.Scene {
       padding: { x: 10, y: 6 },
     }).setDepth(10);
 
-    this.timerText = this.add.text(W / 2, 20, '05:00', {
+    this.timerText = this.add.text(W / 2, 20, this._formatTime(this.timeLeft), {
       fontSize: '36px',
       fill: '#44ee44',
       fontFamily: 'monospace',
@@ -130,7 +242,7 @@ export default class GameScene extends Phaser.Scene {
       strokeThickness: 3,
     }).setOrigin(0.5, 0).setDepth(10);
 
-    this.counterText = this.add.text(W - 18, 28, `0/${GOAL}`, {
+    this.counterText = this.add.text(W - 18, 28, `0/${this.levelConfig.targetSets}`, {
       fontSize: '18px',
       fill: '#fff',
       fontFamily: 'sans-serif',
@@ -186,13 +298,15 @@ export default class GameScene extends Phaser.Scene {
       this.grillGfx.strokeRoundedRect(gx - 3, gy - 3, GRILL_W + 6, GRILL_H + 6, 9);
     }
     if (isDropTarget) {
-      const canDrop = grill.foods.length < CAPACITY && this.dragState?.fromIdx !== idx;
+      const canDrop = this._filledCount(grill.foods) < CAPACITY && this.dragState?.fromIdx !== idx;
       this.grillGfx.lineStyle(3, canDrop ? 0x66ff66 : 0xff3333, 1);
       this.grillGfx.strokeRoundedRect(gx - 4, gy - 4, GRILL_W + 8, GRILL_H + 8, 10);
     }
 
-    for (let fi = 0; fi < grill.foods.length; fi++) {
-      const food = FOOD_MAP[grill.foods[fi]];
+    for (let fi = 0; fi < CAPACITY; fi++) {
+      const foodId = grill.foods[fi];
+      if (!foodId) continue;
+      const food = FOOD_MAP[foodId];
       const { x: sx, y: sy } = FOOD_SLOTS[fi];
       const ax = gx + sx;
       const ay = gy + sy;
@@ -203,7 +317,11 @@ export default class GameScene extends Phaser.Scene {
         this.grillGfx.fillRoundedRect(ax - 4, ay - 4, ICON_SIZE + 8, ICON_SIZE + 8, 9);
       }
 
-      this._addFoodImage(food, ax + ICON_SIZE / 2, ay + ICON_SIZE / 2, 38, 4);
+      this._addFoodImage(food, ax + ICON_SIZE / 2, ay + ICON_SIZE / 2, 38, 4, {
+        draggable: true,
+        grillIdx: idx,
+        foodIdx: fi,
+      });
     }
 
     const plateX = gx;
@@ -216,25 +334,23 @@ export default class GameScene extends Phaser.Scene {
     this.grillGfx.lineStyle(1, 0xddd0b0, 0.5);
     this.grillGfx.strokeRoundedRect(plateX + 4, plateY + 3, GRILL_W - 8, PLATE_H - 6, 5);
 
-    const pf = grill.plateFoods;
-    if (pf.length > 0) {
-      const GAP = 5;
-      const totalW = pf.length * PLATE_ICON_SIZE + (pf.length - 1) * GAP;
-      let px = plateX + Math.floor((GRILL_W - totalW) / 2);
+    for (let pi = 0; pi < CAPACITY; pi++) {
+      const foodId = grill.plateFoods[pi];
+      if (!foodId) continue;
+      const food = FOOD_MAP[foodId];
+      const slotW = PLATE_ICON_SIZE + 5;
+      const px = plateX + Math.floor((GRILL_W - (CAPACITY * PLATE_ICON_SIZE + 10)) / 2) + pi * slotW;
       const py = plateY + Math.floor((PLATE_H - PLATE_ICON_SIZE) / 2);
-
-      for (const foodId of pf) {
-        this._addFoodImage(FOOD_MAP[foodId], px + PLATE_ICON_SIZE / 2, py + PLATE_ICON_SIZE / 2, 26, 4);
-        px += PLATE_ICON_SIZE + GAP;
-      }
+      this._addFoodImage(food, px + PLATE_ICON_SIZE / 2, py + PLATE_ICON_SIZE / 2, 26, 4);
     }
   }
 
-  _addFoodImage(food, x, y, size, depth) {
+  _addFoodImage(food, x, y, size, depth, options = {}) {
     if (this.textures.exists(food.texture)) {
       const image = this.add.image(x, y, food.texture)
         .setDisplaySize(size, size)
         .setDepth(depth);
+      this._bindFoodInput(image, options);
       this.foodObjs.push(image);
       return image;
     }
@@ -248,8 +364,19 @@ export default class GameScene extends Phaser.Scene {
       backgroundColor: `#${food.color.toString(16).padStart(6, '0')}`,
       padding: { x: 4, y: 3 },
     }).setOrigin(0.5).setDepth(depth);
+    this._bindFoodInput(fallback, options);
     this.foodObjs.push(fallback);
     return fallback;
+  }
+
+  _bindFoodInput(obj, options) {
+    if (!options.draggable) return;
+    obj.setInteractive({ useHandCursor: true });
+    obj.on('pointerdown', (pointer, localX, localY, event) => {
+      event?.stopPropagation();
+      if (this.gameState !== 'playing' || this.isAnimating) return;
+      this._beginFoodDrag(pointer, options.grillIdx, options.foodIdx);
+    });
   }
 
   _buildItemBar() {
@@ -291,7 +418,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _onPointerDown(pointer) {
-    if (this.isAnimating) return;
+    if (this.gameState !== 'playing' || this.isAnimating || !this.grills) return;
     const { x: px, y: py } = pointer;
 
     const foodHit = this._findFoodAt(px, py);
@@ -313,6 +440,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _onPointerMove(pointer) {
+    if (this.gameState !== 'playing') return;
     if (!this.dragState) return;
 
     const dx = pointer.x - this.dragState.startX;
@@ -334,6 +462,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _onPointerUp(pointer) {
+    if (this.gameState !== 'playing') return;
     if (!this.dragState) return;
 
     const drag = this.dragState;
@@ -346,7 +475,7 @@ export default class GameScene extends Phaser.Scene {
     }
 
     if (dropIdx !== null && dropIdx !== drag.fromIdx) {
-      this._moveFood(drag.fromIdx, drag.foodIdx, dropIdx);
+      this._moveFood(drag.fromIdx, drag.foodIdx, dropIdx, drag.foodIdx);
       return;
     }
 
@@ -358,7 +487,8 @@ export default class GameScene extends Phaser.Scene {
     for (let gi = 0; gi < COLS * ROWS; gi++) {
       const grill = this.grills[gi];
       const { gx, gy } = this._grillPos(gi);
-      for (let fi = 0; fi < grill.foods.length; fi++) {
+      for (let fi = 0; fi < CAPACITY; fi++) {
+        if (!grill.foods[fi]) continue;
         const ax = gx + FOOD_SLOTS[fi].x;
         const ay = gy + FOOD_SLOTS[fi].y;
         if (
@@ -437,7 +567,7 @@ export default class GameScene extends Phaser.Scene {
       this.selected = null;
       this._redrawAll();
     } else {
-      this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx);
+      this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx, this.selected.foodIdx);
     }
   }
 
@@ -448,26 +578,37 @@ export default class GameScene extends Phaser.Scene {
       this._redrawAll();
       return;
     }
-    this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx);
+    this._moveFood(this.selected.grillIdx, this.selected.foodIdx, grillIdx, this.selected.foodIdx);
   }
 
-  _moveFood(fromIdx, fromFoodIdx, toIdx) {
+  _moveFood(fromIdx, fromFoodIdx, toIdx, preferredSlot = fromFoodIdx) {
     const src = this.grills[fromIdx];
     const dst = this.grills[toIdx];
 
-    if (dst.foods.length >= CAPACITY) {
+    if (this._filledCount(dst.foods) >= CAPACITY) {
       this._shakeFeedback(toIdx);
       this.selected = null;
       this._redrawAll();
       return;
     }
 
-    const [foodId] = src.foods.splice(fromFoodIdx, 1);
-    dst.foods.push(foodId);
+    const foodId = src.foods[fromFoodIdx];
+    if (!foodId) return;
+
+    const toFoodIdx = this._resolveDropSlot(dst.foods, preferredSlot);
+    src.foods[fromFoodIdx] = null;
+    dst.foods[toFoodIdx] = foodId;
     this.selected = null;
 
+    const refilledSource = this._refillEmptyGrill(fromIdx);
     this._redrawAll();
     this._checkMatch(toIdx);
+    if (!this.isAnimating && refilledSource) this._checkMatch(fromIdx);
+  }
+
+  _resolveDropSlot(foods, preferredSlot) {
+    if (!foods[preferredSlot]) return preferredSlot;
+    return foods.findIndex(id => !id);
   }
 
   _checkMatch(grillIdx) {
@@ -481,7 +622,7 @@ export default class GameScene extends Phaser.Scene {
     this._flashGrill(grillIdx, () => {
       for (const foodId of matches) {
         grill.foods = removeThree(grill.foods, foodId);
-        this.cleared += 3;
+        this.clearedSets += 1;
         this.score += 150;
         gained += 150;
       }
@@ -491,9 +632,9 @@ export default class GameScene extends Phaser.Scene {
       const afterClear = () => {
         this._redrawAll();
 
-        if (this.cleared >= GOAL) {
+        if (this._remainingFoodCount() === 0) {
           this.isAnimating = false;
-          this.time.delayedCall(500, () => this._onVictory());
+          this.time.delayedCall(500, () => this._onLevelClear());
           return;
         }
 
@@ -503,16 +644,32 @@ export default class GameScene extends Phaser.Scene {
         });
       };
 
-      if (grill.foods.length === 0 && grill.plateFoods.length > 0) {
+      if (!this._hasAnyFoods(grill.foods) && this._canRefillGrill(grill)) {
         this.time.delayedCall(250, () => {
-          grill.foods = [...grill.plateFoods];
-          grill.plateFoods = this._randFoods(Phaser.Math.Between(1, 3));
+          this._refillEmptyGrill(grillIdx);
           afterClear();
         });
       } else {
         afterClear();
       }
     });
+  }
+
+  _canRefillGrill(grill) {
+    return this._hasAnyFoods(grill.plateFoods) || this.stockFoods.length > 0;
+  }
+
+  _refillEmptyGrill(grillIdx) {
+    const grill = this.grills[grillIdx];
+    if (this._hasAnyFoods(grill.foods) || !this._canRefillGrill(grill)) return false;
+
+    if (this._hasAnyFoods(grill.plateFoods)) {
+      grill.foods = [...grill.plateFoods];
+    } else {
+      grill.foods = this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY));
+    }
+    grill.plateFoods = this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY));
+    return true;
   }
 
   _onSecondTick() {
@@ -524,12 +681,16 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  _formatTime(seconds) {
+    const m = String(Math.floor(seconds / 60)).padStart(2, '0');
+    const s = String(seconds % 60).padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
   _updateHUD() {
-    const m = String(Math.floor(this.timeLeft / 60)).padStart(2, '0');
-    const s = String(this.timeLeft % 60).padStart(2, '0');
-    this.timerText.setText(`${m}:${s}`);
-    this.counterText.setText(`${this.cleared}/${GOAL}`);
-    if (this.timeLeft <= 30) this.timerText.setStyle({ fill: '#ff4444' });
+    this.timerText.setText(this._formatTime(this.timeLeft));
+    this.counterText.setText(`${this.clearedSets}/${this.levelConfig.targetSets}`);
+    this.timerText.setStyle({ fill: this.timeLeft <= 10 ? '#ff4444' : '#44ee44' });
   }
 
   _flashGrill(grillIdx, onComplete) {
@@ -577,39 +738,56 @@ export default class GameScene extends Phaser.Scene {
     this.time.delayedCall(350, () => gfx.destroy());
   }
 
-  _onVictory() {
+  _onLevelClear() {
     this.gameTimer?.remove();
-    this._overlay('CLEAR!', '#ffee00', `SCORE: ${this.score}`);
+    if (this.levelConfig.level >= LEVELS.length) {
+      this._overlay('ALL CLEAR!', '#ffee00', `SCORE: ${this.score}`, 'TITLE', () => this._showTitleScreen());
+      return;
+    }
+    this._overlay(
+      'LEVEL CLEAR!',
+      '#ffee00',
+      `NEXT: Lv.${this.levelConfig.level + 1}`,
+      'NEXT',
+      () => this._startLevel(this.levelConfig.level + 1),
+    );
   }
 
   _onTimeUp() {
-    this._overlay('TIME UP!', '#ff4444', `${this.cleared} / ${GOAL} cleared`);
+    this._overlay('TIME UP!', '#ff4444', `${this.clearedSets} / ${this.levelConfig.targetSets}`, 'RETRY', () => {
+      this._startLevel(this.levelConfig.level);
+    });
   }
 
-  _overlay(title, titleColor, sub) {
+  _overlay(title, titleColor, sub, buttonText, onButton) {
     const W = this.scale.width;
+    this.gameState = 'overlay';
+    this.isAnimating = true;
     this.add.rectangle(W / 2, 406, W, 812, 0x000000, 0.6).setDepth(30);
     this.add.text(W / 2, 290, title, {
-      fontSize: '52px',
+      fontSize: '48px',
       fill: titleColor,
       fontFamily: 'sans-serif',
       stroke: '#000',
       strokeThickness: 5,
     }).setOrigin(0.5).setDepth(31);
     this.add.text(W / 2, 372, sub, {
-      fontSize: '26px',
+      fontSize: '24px',
       fill: '#fff',
       fontFamily: 'sans-serif',
     }).setOrigin(0.5).setDepth(31);
-    this.add.text(W / 2, 452, '[ Retry ]', {
+    this.add.text(W / 2, 452, buttonText, {
       fontSize: '22px',
       fill: '#ffdd00',
       fontFamily: 'sans-serif',
       stroke: '#000',
       strokeThickness: 2,
       backgroundColor: '#7a3300',
-      padding: { x: 20, y: 12 },
+      padding: { x: 24, y: 12 },
     }).setOrigin(0.5).setDepth(31).setInteractive({ useHandCursor: true })
-      .on('pointerdown', () => this.scene.restart());
+      .on('pointerdown', (pointer, localX, localY, event) => {
+        event?.stopPropagation();
+        onButton();
+      });
   }
 }
