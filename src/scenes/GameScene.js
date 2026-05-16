@@ -32,14 +32,16 @@ const PLATE_H = 36;
 const PLATE_ICON_SIZE = 22;
 const PLATE_OFFSET = GRILL_H + PLATE_GAP;
 
-const LEVELS = Array.from({ length: 10 }, (_, i) => {
+const LEVELS = Array.from({ length: 20 }, (_, i) => {
   const level = i + 1;
-  const targetSets = 10 + i * 2;
-  const foodCount = Math.min(8, 5 + Math.floor(i / 3));
+  const targetSets = 8 + level * 2;
+  const foodCount = Math.min(FOODS.length, 4 + Math.floor((level + 1) / 3));
+  const activeGrills = Math.min(COLS * ROWS, 5 + Math.floor((level + 1) / 2));
   return {
     level,
     targetSets,
     timeSecs: Math.ceil(targetSets * 4),
+    activeGrills,
     foodIds: FOODS.slice(0, foodCount).map(food => food.id),
   };
 });
@@ -83,7 +85,7 @@ export default class GameScene extends Phaser.Scene {
       strokeThickness: 6,
     }).setOrigin(0.5).setDepth(20);
 
-    this.add.text(W / 2, 250, 'Level 1 - 10', {
+    this.add.text(W / 2, 250, 'Level 1 - 20', {
       fontSize: '20px',
       fill: '#7a4e10',
       fontFamily: 'sans-serif',
@@ -116,8 +118,9 @@ export default class GameScene extends Phaser.Scene {
     this.stockFoods = this._buildLevelStock(this.levelConfig);
     this.grills = Array.from({ length: COLS * ROWS }, (_, i) => ({
       id: i,
-      foods: this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY - 1)),
-      plateFoods: this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY)),
+      locked: i >= this.levelConfig.activeGrills,
+      foods: i < this.levelConfig.activeGrills ? this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY - 1)) : Array(CAPACITY).fill(null),
+      plateFoods: i < this.levelConfig.activeGrills ? this._takeFoodSlots(Phaser.Math.Between(1, CAPACITY)) : Array(CAPACITY).fill(null),
     }));
 
     this.selected = null;
@@ -206,6 +209,7 @@ export default class GameScene extends Phaser.Scene {
   _remainingFoodCount() {
     let total = this.stockFoods.length;
     for (const grill of this.grills) {
+      if (grill.locked) continue;
       total += this._filledCount(grill.foods);
       total += this._filledCount(grill.plateFoods);
     }
@@ -293,6 +297,11 @@ export default class GameScene extends Phaser.Scene {
       this.grillGfx.lineBetween(gx + (GRILL_W / 6) * c, gy + 3, gx + (GRILL_W / 6) * c, gy + GRILL_H - 3);
     }
 
+    if (grill.locked) {
+      this._drawGrillLid(gx, gy);
+      return;
+    }
+
     if (isSel) {
       this.grillGfx.lineStyle(3, 0xffee00, 1);
       this.grillGfx.strokeRoundedRect(gx - 3, gy - 3, GRILL_W + 6, GRILL_H + 6, 9);
@@ -343,6 +352,17 @@ export default class GameScene extends Phaser.Scene {
       const py = plateY + Math.floor((PLATE_H - PLATE_ICON_SIZE) / 2);
       this._addFoodImage(food, px + PLATE_ICON_SIZE / 2, py + PLATE_ICON_SIZE / 2, 26, 4);
     }
+  }
+
+  _drawGrillLid(gx, gy) {
+    this.grillGfx.fillStyle(0x151515, 0.72);
+    this.grillGfx.fillRoundedRect(gx - 1, gy - 1, GRILL_W + 2, GRILL_H + PLATE_GAP + PLATE_H + 2, 8);
+    this.grillGfx.fillStyle(0x5a5247, 1);
+    this.grillGfx.fillRoundedRect(gx + 7, gy + 9, GRILL_W - 14, GRILL_H + PLATE_GAP + PLATE_H - 12, 8);
+    this.grillGfx.lineStyle(2, 0x2f2a24, 0.9);
+    this.grillGfx.strokeRoundedRect(gx + 7, gy + 9, GRILL_W - 14, GRILL_H + PLATE_GAP + PLATE_H - 12, 8);
+    this.grillGfx.fillStyle(0x2f2a24, 1);
+    this.grillGfx.fillRoundedRect(gx + GRILL_W / 2 - 18, gy + 18, 36, 8, 4);
   }
 
   _addFoodImage(food, x, y, size, depth, options = {}) {
@@ -486,6 +506,7 @@ export default class GameScene extends Phaser.Scene {
   _findFoodAt(px, py) {
     for (let gi = 0; gi < COLS * ROWS; gi++) {
       const grill = this.grills[gi];
+      if (grill.locked) continue;
       const { gx, gy } = this._grillPos(gi);
       for (let fi = 0; fi < CAPACITY; fi++) {
         if (!grill.foods[fi]) continue;
@@ -506,6 +527,7 @@ export default class GameScene extends Phaser.Scene {
 
   _findGrillBodyAt(px, py) {
     for (let gi = 0; gi < COLS * ROWS; gi++) {
+      if (this.grills[gi].locked) continue;
       const { gx, gy } = this._grillPos(gi);
       if (px >= gx && px < gx + GRILL_W && py >= gy && py < gy + GRILL_H) return gi;
     }
@@ -514,6 +536,7 @@ export default class GameScene extends Phaser.Scene {
 
   _findDropTargetAt(px, py) {
     for (let gi = 0; gi < COLS * ROWS; gi++) {
+      if (this.grills[gi].locked) continue;
       const { gx, gy } = this._grillPos(gi);
       const left = gx - DROP_HIT_PAD;
       const top = gy - DROP_HIT_PAD;
@@ -585,7 +608,7 @@ export default class GameScene extends Phaser.Scene {
     const src = this.grills[fromIdx];
     const dst = this.grills[toIdx];
 
-    if (this._filledCount(dst.foods) >= CAPACITY) {
+    if (src.locked || dst.locked || this._filledCount(dst.foods) >= CAPACITY) {
       this._shakeFeedback(toIdx);
       this.selected = null;
       this._redrawAll();
@@ -656,7 +679,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _canRefillGrill(grill) {
-    return this._hasAnyFoods(grill.plateFoods) || this.stockFoods.length > 0;
+    return !grill.locked && (this._hasAnyFoods(grill.plateFoods) || this.stockFoods.length > 0);
   }
 
   _refillEmptyGrill(grillIdx) {
