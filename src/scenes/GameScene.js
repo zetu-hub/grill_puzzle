@@ -124,6 +124,7 @@ export default class GameScene extends Phaser.Scene {
     start.on('pointerdown', (pointer, localX, localY, event) => {
       event?.stopPropagation();
       if (this.gameState !== 'title') return;
+      this._blockGameInputForPointer(pointer);
       this._startLevel(1);
     });
 
@@ -201,6 +202,7 @@ export default class GameScene extends Phaser.Scene {
         card.setInteractive({ useHandCursor: true });
         card.on('pointerdown', (pointer, localX, localY, event) => {
           event?.stopPropagation();
+          this._blockGameInputForPointer(pointer);
           this._startLevel(level);
         });
       }
@@ -275,6 +277,28 @@ export default class GameScene extends Phaser.Scene {
       callback: this._onSecondTick,
       callbackScope: this,
     });
+  }
+
+  _pointerKey(pointer) {
+    return pointer?.id ?? pointer?.pointerId ?? 0;
+  }
+
+  _blockGameInputForPointer(pointer) {
+    this.blockedGamePointerKey = this._pointerKey(pointer);
+    this.time.delayedCall(300, () => {
+      if (this.blockedGamePointerKey === this._pointerKey(pointer)) {
+        this.blockedGamePointerKey = undefined;
+      }
+    });
+  }
+
+  _isBlockedGamePointer(pointer) {
+    return this.blockedGamePointerKey !== undefined &&
+      this.blockedGamePointerKey === this._pointerKey(pointer);
+  }
+
+  _releaseBlockedGamePointer(pointer) {
+    if (this._isBlockedGamePointer(pointer)) this.blockedGamePointerKey = undefined;
   }
 
   _drawBackground() {
@@ -703,6 +727,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _onPointerDown(pointer) {
+    if (this._isBlockedGamePointer(pointer)) return;
     if (this.gameState !== 'playing' || this.isAnimating || !this.grills) return;
     const { x: px, y: py } = pointer;
 
@@ -725,6 +750,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _onPointerMove(pointer) {
+    if (this._isBlockedGamePointer(pointer)) return;
     if (this.gameState !== 'playing') return;
     if (!this.dragState) return;
 
@@ -749,6 +775,10 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _onPointerUp(pointer) {
+    if (this._isBlockedGamePointer(pointer)) {
+      this._releaseBlockedGamePointer(pointer);
+      return;
+    }
     if (this.gameState !== 'playing') return;
     if (!this.dragState) return;
 
