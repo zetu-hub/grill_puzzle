@@ -124,8 +124,7 @@ export default class GameScene extends Phaser.Scene {
     start.on('pointerdown', (pointer, localX, localY, event) => {
       event?.stopPropagation();
       if (this.gameState !== 'title') return;
-      this._blockGameInputForPointer(pointer);
-      this._startLevel(1);
+      this._startLevelFromMenu(1, pointer);
     });
 
     const levels = this.add.text(W / 2, 430, 'LEVELS', {
@@ -171,6 +170,7 @@ export default class GameScene extends Phaser.Scene {
     this._clearDragVisuals();
     this.gameTimer?.remove();
     this.children.removeAll(true);
+    this.menuInputObjects = [];
     this._drawBackground();
 
     const W = this.scale.width;
@@ -200,10 +200,11 @@ export default class GameScene extends Phaser.Scene {
         .setStrokeStyle(1, 0x7a4e10);
       if (unlocked) {
         card.setInteractive({ useHandCursor: true });
+        this.menuInputObjects.push(card);
         card.on('pointerdown', (pointer, localX, localY, event) => {
           event?.stopPropagation();
-          this._blockGameInputForPointer(pointer);
-          this._startLevel(level);
+          if (this.gameState !== 'levelSelect' && this.gameState !== 'records') return;
+          this._startLevelFromMenu(level, pointer);
         });
       }
       this.add.text(x, y, `Lv.${String(level).padStart(2, '0')}`, {
@@ -230,6 +231,7 @@ export default class GameScene extends Phaser.Scene {
       backgroundColor: '#7a3300',
       padding: { x: 26, y: 12 },
     }).setOrigin(0.5).setDepth(20).setInteractive({ useHandCursor: true });
+    this.menuInputObjects.push(back);
     back.on('pointerdown', (pointer, localX, localY, event) => {
       event?.stopPropagation();
       this._showTitleScreen();
@@ -238,6 +240,21 @@ export default class GameScene extends Phaser.Scene {
 
   _isLevelUnlocked(level, records = this._loadRecords()) {
     return level === 1 || Boolean(records[level]) || Boolean(records[level - 1]);
+  }
+
+  _disableMenuInputs() {
+    this.menuInputObjects?.forEach(obj => {
+      obj.disableInteractive?.();
+      obj.removeAllListeners?.();
+    });
+    this.menuInputObjects = [];
+  }
+
+  _startLevelFromMenu(levelNumber, pointer) {
+    this._blockGameInputForPointer(pointer);
+    this._disableMenuInputs();
+    this.gameState = 'starting';
+    this.time.delayedCall(0, () => this._startLevel(levelNumber));
   }
 
   _startLevel(levelNumber) {
