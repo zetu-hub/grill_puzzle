@@ -28,6 +28,9 @@ const UI_ASSETS = [
   ['ui-item-time', 'src/assets/ui/item-time.png'],
   ['ui-star', 'src/assets/ui/star.png'],
 ];
+const AUDIO_ASSETS = [
+  ['bgm-shuffle', 'shuffle_shuffle.mp3'],
+];
 const FOOD_SLOTS = [
   { x: 4, y: 9 },
   { x: 41, y: 9 },
@@ -73,6 +76,9 @@ export default class GameScene extends Phaser.Scene {
     for (const [key, asset] of UI_ASSETS) {
       this.load.image(key, asset);
     }
+    for (const [key, asset] of AUDIO_ASSETS) {
+      this.load.audio(key, asset);
+    }
   }
 
   create() {
@@ -90,6 +96,7 @@ export default class GameScene extends Phaser.Scene {
     this.selected = null;
     this._clearDragVisuals();
     this.gameTimer?.remove();
+    this._stopBgm();
     this.children.removeAll(true);
     this._drawBackground();
 
@@ -286,6 +293,7 @@ export default class GameScene extends Phaser.Scene {
     this._buildHUD();
     this._buildGrills();
     this._buildItemBar();
+    this._playGameplayBgm();
 
     this.gameTimer?.remove();
     this.gameTimer = this.time.addEvent({
@@ -316,6 +324,66 @@ export default class GameScene extends Phaser.Scene {
 
   _releaseBlockedGamePointer(pointer) {
     if (this._isBlockedGamePointer(pointer)) this.blockedGamePointerKey = undefined;
+  }
+
+  _playGameplayBgm() {
+    if (!this.sound || !this.cache.audio.exists('bgm-shuffle')) return;
+    if (!this.bgm) {
+      this.bgm = this.sound.add('bgm-shuffle', {
+        loop: true,
+        volume: 0.35,
+      });
+    }
+    if (this.bgm.isPlaying) return;
+    try {
+      this.bgm.play();
+    } catch (error) {
+      // Some browsers keep audio locked until the next gesture. The game can continue silently.
+    }
+  }
+
+  _pauseBgm() {
+    if (this.bgm?.isPlaying) this.bgm.pause();
+  }
+
+  _resumeBgm() {
+    if (this.bgm?.isPaused) this.bgm.resume();
+    else this._playGameplayBgm();
+  }
+
+  _stopBgm() {
+    if (this.bgm?.isPlaying || this.bgm?.isPaused) this.bgm.stop();
+  }
+
+  _playSizzleSfx() {
+    const context = this.sound?.context;
+    if (!context) return;
+    if (context.state === 'suspended') context.resume?.();
+
+    const duration = 0.32;
+    const sampleRate = context.sampleRate;
+    const buffer = context.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+      const t = i / data.length;
+      const envelope = Math.pow(1 - t, 1.8);
+      data[i] = (Math.random() * 2 - 1) * envelope;
+    }
+
+    const source = context.createBufferSource();
+    const filter = context.createBiquadFilter();
+    const gain = context.createGain();
+    source.buffer = buffer;
+    filter.type = 'bandpass';
+    filter.frequency.value = 1800;
+    filter.Q.value = 0.85;
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + duration);
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(context.destination);
+    source.start();
   }
 
   _drawBackground() {
@@ -446,6 +514,7 @@ export default class GameScene extends Phaser.Scene {
     if (this.gameState !== 'playing') return;
     this.gameState = 'paused';
     this.gameTimer.paused = true;
+    this._pauseBgm();
     this._clearDragVisuals();
     this.selected = null;
     this._redrawAll();
@@ -472,6 +541,7 @@ export default class GameScene extends Phaser.Scene {
     this.gameState = 'playing';
     this.isAnimating = false;
     this.gameTimer.paused = false;
+    this._resumeBgm();
     this._redrawItemBar();
   }
 
@@ -1002,6 +1072,7 @@ export default class GameScene extends Phaser.Scene {
     let gained = 0;
 
     this._flashGrill(grillIdx, () => {
+      this._playSizzleSfx();
       for (const foodId of matches) {
         grill.foods = removeThree(grill.foods, foodId);
         this.clearedSets += 1;
@@ -1123,6 +1194,7 @@ export default class GameScene extends Phaser.Scene {
 
   _onLevelClear() {
     this.gameTimer?.remove();
+    this._stopBgm();
     const stars = this._calculateStars();
     this._saveLevelRecord(stars);
     if (this.levelConfig.level >= LEVELS.length) {
@@ -1133,6 +1205,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _onTimeUp() {
+    this._stopBgm();
     this._overlay('TIME UP!', '#ff4444', `${this.clearedSets} / ${this.levelConfig.targetSets}  MOVES: ${this.moves}`, 'RETRY', () => {
       this._startLevel(this.levelConfig.level);
     });
