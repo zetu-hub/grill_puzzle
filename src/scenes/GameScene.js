@@ -118,7 +118,7 @@ export default class GameScene extends Phaser.Scene {
       padding: { x: 18, y: 8 },
     }).setOrigin(0.5).setDepth(20);
 
-    const start = this.add.text(W / 2, 350, 'START', {
+    const start = this.add.text(W / 2, 330, 'START', {
       fontSize: '30px',
       fill: '#ffdd00',
       fontFamily: 'sans-serif',
@@ -131,10 +131,26 @@ export default class GameScene extends Phaser.Scene {
     start.on('pointerdown', (pointer, localX, localY, event) => {
       event?.stopPropagation();
       if (this.gameState !== 'title') return;
-      this._startLevelFromMenu(1, pointer);
+      this._startLevelFromMenu(1, pointer, 'timed');
     });
 
-    const levels = this.add.text(W / 2, 430, 'LEVELS', {
+    const noLimit = this.add.text(W / 2, 405, 'NO LIMIT', {
+      fontSize: '22px',
+      fill: '#ffdd00',
+      fontFamily: 'sans-serif',
+      fontStyle: 'bold',
+      stroke: '#000',
+      strokeThickness: 3,
+      backgroundColor: '#7a3300',
+      padding: { x: 20, y: 12 },
+    }).setOrigin(0.5).setDepth(20).setInteractive({ useHandCursor: true });
+    noLimit.on('pointerdown', (pointer, localX, localY, event) => {
+      event?.stopPropagation();
+      if (this.gameState !== 'title') return;
+      this._startLevelFromMenu(1, pointer, 'timeless');
+    });
+
+    const levels = this.add.text(W / 2, 480, 'LEVELS', {
       fontSize: '22px',
       fill: '#ffdd00',
       fontFamily: 'sans-serif',
@@ -150,7 +166,7 @@ export default class GameScene extends Phaser.Scene {
       this._showLevelSelectScreen();
     });
 
-    const records = this.add.text(W / 2, 495, 'RECORDS', {
+    const records = this.add.text(W / 2, 545, 'RECORDS', {
       fontSize: '22px',
       fill: '#fff5d6',
       fontFamily: 'sans-serif',
@@ -257,17 +273,19 @@ export default class GameScene extends Phaser.Scene {
     this.menuInputObjects = [];
   }
 
-  _startLevelFromMenu(levelNumber, pointer) {
+  _startLevelFromMenu(levelNumber, pointer, mode = 'timed') {
     this._blockGameInputForPointer(pointer);
     this._disableMenuInputs();
     this.gameState = 'starting';
-    this.time.delayedCall(0, () => this._startLevel(levelNumber));
+    this.time.delayedCall(0, () => this._startLevel(levelNumber, mode));
   }
 
-  _startLevel(levelNumber) {
+  _startLevel(levelNumber, mode = this.gameMode ?? 'timed') {
     this.gameState = 'playing';
     this.children.removeAll(true);
 
+    this.gameMode = mode;
+    this.isTimeless = this.gameMode === 'timeless';
     this.levelConfig = LEVELS[levelNumber - 1];
     this.stockFoods = this._buildLevelStock(this.levelConfig);
     this.grills = Array.from({ length: COLS * ROWS }, (_, i) => ({
@@ -282,7 +300,7 @@ export default class GameScene extends Phaser.Scene {
     this.dropTarget = null;
     this.score = 0;
     this.clearedSets = 0;
-    this.timeLeft = this.levelConfig.timeSecs;
+    this.timeLeft = this.isTimeless ? null : this.levelConfig.timeSecs;
     this.isAnimating = false;
     this.moves = 0;
     this.moveHistory = [];
@@ -296,12 +314,15 @@ export default class GameScene extends Phaser.Scene {
     this._playGameplayBgm();
 
     this.gameTimer?.remove();
-    this.gameTimer = this.time.addEvent({
-      delay: 1000,
-      loop: true,
-      callback: this._onSecondTick,
-      callbackScope: this,
-    });
+    this.gameTimer = null;
+    if (!this.isTimeless) {
+      this.gameTimer = this.time.addEvent({
+        delay: 1000,
+        loop: true,
+        callback: this._onSecondTick,
+        callbackScope: this,
+      });
+    }
   }
 
   _pointerKey(pointer) {
@@ -480,7 +501,7 @@ export default class GameScene extends Phaser.Scene {
     }).setDepth(10);
 
     this.timerText = this.add.text(W / 2, 20, this._formatTime(this.timeLeft), {
-      fontSize: '36px',
+      fontSize: this.isTimeless ? '24px' : '36px',
       fill: '#44ee44',
       fontFamily: 'monospace',
       stroke: '#003300',
@@ -513,7 +534,7 @@ export default class GameScene extends Phaser.Scene {
   _showPauseMenu() {
     if (this.gameState !== 'playing') return;
     this.gameState = 'paused';
-    this.gameTimer.paused = true;
+    if (this.gameTimer) this.gameTimer.paused = true;
     this._pauseBgm();
     this._clearDragVisuals();
     this.selected = null;
@@ -530,7 +551,7 @@ export default class GameScene extends Phaser.Scene {
       strokeThickness: 5,
     }).setOrigin(0.5).setDepth(41));
     this._addOverlayButton(W / 2, 345, 'RESUME', 41, () => this._resumeFromPause(), this.pauseOverlay);
-    this._addOverlayButton(W / 2, 420, 'RETRY', 41, () => this._startLevel(this.levelConfig.level), this.pauseOverlay);
+    this._addOverlayButton(W / 2, 420, 'RETRY', 41, () => this._startLevel(this.levelConfig.level, this.gameMode), this.pauseOverlay);
     this._addOverlayButton(W / 2, 495, 'TITLE', 41, () => this._showTitleScreen(), this.pauseOverlay);
   }
 
@@ -540,7 +561,7 @@ export default class GameScene extends Phaser.Scene {
     this.pauseOverlay = null;
     this.gameState = 'playing';
     this.isAnimating = false;
-    this.gameTimer.paused = false;
+    if (this.gameTimer) this.gameTimer.paused = false;
     this._resumeBgm();
     this._redrawItemBar();
   }
@@ -701,7 +722,7 @@ export default class GameScene extends Phaser.Scene {
       const item = ITEM_DEFS[i];
       const bx = 44 + i * 74;
       const uses = this.itemUses?.[item.key] ?? 0;
-      const enabled = uses > 0 && this.gameState === 'playing';
+      const enabled = uses > 0 && this.gameState === 'playing' && !(this.isTimeless && item.key === 'time');
       const circle = this.add.circle(bx, this.itemBarY + 26, 24, enabled ? 0xd4b07a : 0x9a7450)
         .setDepth(6)
         .setStrokeStyle(2, 0x7a5030)
@@ -738,6 +759,7 @@ export default class GameScene extends Phaser.Scene {
 
   _useItem(key, pointer = null) {
     if (this.gameState !== 'playing' || this.isAnimating || (this.itemUses?.[key] ?? 0) <= 0) return;
+    if (this.isTimeless && key === 'time') return;
     if (pointer && !this._isPointerOnItemButton(key, pointer.x, pointer.y)) return;
 
     let used = false;
@@ -809,6 +831,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _useTimeItem() {
+    if (this.isTimeless) return false;
     this.timeLeft += 10;
     return true;
   }
@@ -1126,7 +1149,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _onSecondTick() {
-    if (this.gameState !== 'playing') return;
+    if (this.gameState !== 'playing' || this.isTimeless) return;
     this.timeLeft--;
     this._updateHUD();
     if (this.timeLeft <= 0) {
@@ -1136,6 +1159,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _formatTime(seconds) {
+    if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return 'NO LIMIT';
     const m = String(Math.floor(seconds / 60)).padStart(2, '0');
     const s = String(seconds % 60).padStart(2, '0');
     return `${m}:${s}`;
@@ -1144,7 +1168,10 @@ export default class GameScene extends Phaser.Scene {
   _updateHUD() {
     this.timerText.setText(this._formatTime(this.timeLeft));
     this.counterText.setText(`${this.clearedSets}/${this.levelConfig.targetSets}`);
-    this.timerText.setStyle({ fill: this.timeLeft <= 10 ? '#ff4444' : '#44ee44' });
+    this.timerText.setStyle({
+      fill: !this.isTimeless && this.timeLeft <= 10 ? '#ff4444' : '#44ee44',
+      fontSize: this.isTimeless ? '24px' : '36px',
+    });
   }
 
   _flashGrill(grillIdx, onComplete) {
@@ -1201,20 +1228,25 @@ export default class GameScene extends Phaser.Scene {
       this._resultOverlay('ALL CLEAR!', 'TITLE', () => this._showTitleScreen(), stars);
       return;
     }
-    this._resultOverlay('LEVEL CLEAR!', 'NEXT', () => this._startLevel(this.levelConfig.level + 1), stars);
+    this._resultOverlay('LEVEL CLEAR!', 'NEXT', () => this._startLevel(this.levelConfig.level + 1, this.gameMode), stars);
   }
 
   _onTimeUp() {
     this._stopBgm();
     this._overlay('TIME UP!', '#ff4444', `${this.clearedSets} / ${this.levelConfig.targetSets}  MOVES: ${this.moves}`, 'RETRY', () => {
-      this._startLevel(this.levelConfig.level);
+      this._startLevel(this.levelConfig.level, this.gameMode);
     });
   }
 
   _calculateStars() {
     if (this.helperUsed) return 1;
-    const timeRatio = this.timeLeft / this.levelConfig.timeSecs;
     const parMoves = Math.max(1, this.levelConfig.targetSets * 2);
+    if (this.isTimeless) {
+      if (this.moves <= parMoves) return 3;
+      if (this.moves <= Math.ceil(parMoves * 1.5)) return 2;
+      return 1;
+    }
+    const timeRatio = this.timeLeft / this.levelConfig.timeSecs;
     if (timeRatio >= 0.35 && this.moves <= parMoves) return 3;
     if (timeRatio >= 0.15 && this.moves <= Math.ceil(parMoves * 1.5)) return 2;
     return 1;
@@ -1247,6 +1279,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   _saveLevelRecord(stars) {
+    if (this.isTimeless) return;
     const records = this._loadRecords();
     const level = this.levelConfig.level;
     const current = {
@@ -1284,7 +1317,7 @@ export default class GameScene extends Phaser.Scene {
     this._drawStarRating(W / 2, 305, stars, 46, 31);
     const lines = [
       `MOVES: ${this.moves}`,
-      `TIME LEFT: ${this._formatTime(Math.max(0, this.timeLeft))}`,
+      `TIME LEFT: ${this.isTimeless ? 'NO LIMIT' : this._formatTime(Math.max(0, this.timeLeft))}`,
       this.helperUsed ? 'HELPER USED: STAR 1' :
         (this.levelConfig.level >= LEVELS.length ? 'ALL LEVELS COMPLETE' : `NEXT: Lv.${this.levelConfig.level + 1}`),
     ];
